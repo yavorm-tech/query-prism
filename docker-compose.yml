@@ -1,0 +1,383 @@
+services:
+
+  # ─────────────────────────────────────────────
+  # PostgreSQL 16 + pgvector
+  # ─────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg18-trixie
+    container_name: rag_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "5434:5432"
+    mem_limit: 8g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Neo4j 5 — knowledge graph
+  # ─────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5-community
+    container_name: rag_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-ragpassword}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_initial__size: 1g
+      NEO4J_server_memory_heap_max__size: 2g
+      NEO4J_server_memory_pagecache_size: 2g
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7474"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Redis — Celery broker + query cache
+  # ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --appendonly no
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6380:6379"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Postfix mail relay
+  # ─────────────────────────────────────────────
+  postfix:
+    image: boky/postfix:latest
+    container_name: rag_postfix
+    restart: unless-stopped
+    environment:
+      RELAYHOST: ${SMTP_RELAY_HOST_URL}
+      RELAYHOST_USERNAME: ${SMTP_USERNAME}
+      RELAYHOST_PASSWORD: ${SMTP_PASSWORD}
+      MYNETWORKS: "127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+      ALLOWED_SENDER_DOMAINS: "*"
+      POSTFIX_smtpd_recipient_restrictions: "permit_mynetworks, reject_non_fqdn_recipient, reject_unknown_recipient_domain, reject_unauth_destination"
+      HOSTNAME: "mail.chatbot-app.com"
+      MASQUERADE_DOMAINS: "chatbot-app.com"
+      BOUNCE_NOTICE_RECIPIENT: "nobody"
+      BOUNCE_QUEUE_LIFETIME: "0"
+    mem_limit: 128m
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Auth Service — port 8001
+  # ─────────────────────────────────────────────
+  auth:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+    container_name: svc_auth
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
+      BILLING_URL: http://billing:8004
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      billing:
+        condition: service_started
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Ingestion Service — port 8002
+  # ─────────────────────────────────────────────
+  ingestion:
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+    container_name: svc_ingestion
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ragpassword}
+      BILLING_URL: http://billing:8004
+    volumes:
+      - uploads:/app/uploads
+    mem_limit: 2g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      billing:
+        condition: service_started
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Celery Worker (ingestion jobs)
+  # ─────────────────────────────────────────────
+  worker:
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+    container_name: svc_worker
+    restart: unless-stopped
+    command: celery -A app.worker worker --loglevel=info --concurrency=2 -Q ingestion
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ragpassword}
+      BILLING_URL: http://billing:8004
+    volumes:
+      - uploads:/app/uploads
+    mem_limit: 4g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Chat Service — port 8003
+  # ─────────────────────────────────────────────
+  chat:
+    build:
+      context: ./services/chat
+      dockerfile: Dockerfile
+    container_name: svc_chat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ragpassword}
+      BILLING_URL: http://billing:8004
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      billing:
+        condition: service_started
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Billing Service — port 8004 (internal only)
+  # ─────────────────────────────────────────────
+  billing:
+    build:
+      context: ./services/billing
+      dockerfile: Dockerfile
+    container_name: svc_billing
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Notification Service — port 8005
+  # ─────────────────────────────────────────────
+  notification:
+    build:
+      context: ./services/notification
+      dockerfile: Dockerfile
+    container_name: svc_notification
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SMTP_HOST: postfix
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+    mem_limit: 256m
+    depends_on:
+      - postfix
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Nginx API Gateway — port 8000
+  # ─────────────────────────────────────────────
+  gateway:
+    image: nginx:stable-alpine
+    container_name: svc_gateway
+    restart: unless-stopped
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:8000"
+    mem_limit: 128m
+    depends_on:
+      - auth
+      - ingestion
+      - chat
+      - billing
+      - notification
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Flower — Celery task monitor (dev only)
+  # ─────────────────────────────────────────────
+  flower:
+    image: mher/flower:2.0
+    container_name: rag_flower
+    restart: on-failure
+    command: celery --broker=redis://redis:6379/0 flower --port=5555
+    ports:
+      - "5556:5555"
+    mem_limit: 256m
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # React (Vite) frontend — internal only, accessed via ssl-proxy or ssl-proxy-http
+  # ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend-react
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+    container_name: rag_frontend
+    restart: unless-stopped
+    profiles: ["http", "ssl"]
+    volumes:
+      - ./gateway/frontend-react.conf:/etc/nginx/nginx.conf:ro
+    mem_limit: 512m
+    depends_on:
+      - gateway
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Nginx HTTP proxy — port 80 only (dev / cert bootstrap)
+  # ─────────────────────────────────────────────
+  ssl-proxy-http:
+    image: nginx:stable-alpine
+    container_name: rag_ssl_proxy_http
+    restart: unless-stopped
+    profiles: ["http"]
+    ports:
+      - "80:80"
+    volumes:
+      - ./gateway/ssl-proxy-http.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot_www:/var/www/certbot:ro
+    mem_limit: 128m
+    depends_on:
+      - gateway
+      - frontend
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Nginx SSL proxy — ports 80 + 443
+  # ─────────────────────────────────────────────
+  ssl-proxy:
+    image: nginx:stable-alpine
+    container_name: rag_ssl_proxy
+    restart: unless-stopped
+    profiles: ["ssl"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./gateway/ssl-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot_www:/var/www/certbot:ro
+      - ./certbot_conf:/etc/letsencrypt:ro
+    mem_limit: 128m
+    depends_on:
+      - gateway
+      - frontend
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
+  # Certbot — auto-renewal every 12 h
+  # ─────────────────────────────────────────────
+  certbot:
+    image: certbot/certbot
+    container_name: rag_certbot
+    restart: unless-stopped
+    profiles: ["ssl"]
+    volumes:
+      - ./certbot_www:/var/www/certbot
+      - ./certbot_conf:/etc/letsencrypt
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_plugins:
+  redis_data:
+  uploads:
+
+networks:
+  rag_net:
+    driver: bridge

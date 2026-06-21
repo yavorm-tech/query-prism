@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="370" viewBox="0 0 680 370" role="img">
+<title>QueryPrism logo — light enters a prism and refracts into a rainbow spelling QueryPrism</title>
+<desc>A single white beam enters the left face of a 3D glass prism. The beam refracts and fans out as a spectrum of coloured rays each ending in a letter spelling QUERYPRISM.</desc>
+
+<defs>
+  <style>
+    .pf-dark  { fill: #0A1628; stroke: #162848; stroke-width: 0.8; }
+    .pf-mid   { fill: #0E1E3C; stroke: #1E3A6A; stroke-width: 0.8; }
+    .pf-light { fill: #142850; stroke: #2A5090; stroke-width: 0.8; }
+    .pf-top   { fill: #1E3C72; stroke: #3A6AC0; stroke-width: 0.8; }
+    .pe       { stroke: #4A7ACA; stroke-width: 1.2; fill: none; }
+    .pe-b     { stroke: #8AB4FF; stroke-width: 2; fill: none; }
+    .ib       { stroke: #E8F0FF; stroke-width: 2.5; fill: none; opacity: 0.85; }
+    .ib-glow  { stroke: #FFFFFF; stroke-width: 7; fill: none; opacity: 0.07; }
+    .sl       { font-family: Inter, system-ui, sans-serif; font-weight: 800; font-size: 34px; }
+  </style>
+</defs>
+
+<!-- Back face -->
+<polygon points="238,56 126,308 350,308" fill="#050810" stroke="#0E1C38" stroke-width="0.5" opacity="0.9"/>
+
+<!-- Left face -->
+<polygon points="220,70 108,322 126,308 238,56" class="pf-dark"/>
+
+<!-- Right face -->
+<polygon points="220,70 332,322 350,308 238,56" class="pf-light"/>
+
+<!-- Front face -->
+<polygon points="220,70 108,322 332,322" class="pf-mid"/>
+
+<!-- Inner highlight -->
+<polygon points="220,70 164,196 276,196" fill="#FFFFFF" opacity="0.025"/>
+<polygon points="220,70 185,155 255,155" fill="#FFFFFF" opacity="0.02"/>
+
+<!-- Bottom base -->
+<polygon points="108,322 126,308 350,308 332,322" class="pf-dark" opacity="0.7"/>
+
+<!-- Top cap -->
+<polygon points="220,70 238,56 252,64 234,78" class="pf-top"/>
+
+<!-- Primary edges -->
+<polyline points="220,70 108,322 332,322 220,70" class="pe"/>
+<polyline points="238,56 126,308 350,308 238,56" stroke="#1A3060" stroke-width="0.6" fill="none" opacity="0.5"/>
+
+<!-- Depth edges -->
+<line x1="220" y1="70"  x2="238" y2="56"  class="pe-b"/>
+<line x1="108" y1="322" x2="126" y2="308" stroke="#1E3A6A" stroke-width="0.8" fill="none"/>
+<line x1="332" y1="322" x2="350" y2="308" stroke="#1E3A6A" stroke-width="0.8" fill="none"/>
+
+<!-- Apex glow -->
+<circle cx="220" cy="70"  r="4"  fill="#B8D4FF" opacity="0.9"/>
+<circle cx="220" cy="70"  r="8"  fill="none" stroke="#6AA0FF" stroke-width="0.8" opacity="0.4"/>
+<circle cx="220" cy="70"  r="14" fill="none" stroke="#4A80FF" stroke-width="0.5" opacity="0.15"/>
+<circle cx="238" cy="56"  r="2.5" fill="#8AB4FF" opacity="0.6"/>
+
+<!-- Internal refraction lines -->
+<line x1="220" y1="70" x2="170" y2="270" stroke="#3A70E0" stroke-width="0.5" opacity="0.18" fill="none"/>
+<line x1="220" y1="70" x2="220" y2="322" stroke="#4A80FF" stroke-width="0.4" opacity="0.12" fill="none"/>
+<line x1="220" y1="70" x2="270" y2="268" stroke="#3A70E0" stroke-width="0.5" opacity="0.18" fill="none"/>
+
+<!-- Input beam -->
+<line x1="44" y1="196" x2="160" y2="196" class="ib-glow"/>
+<line x1="44" y1="196" x2="160" y2="196" class="ib"/>
+<circle cx="160" cy="196" r="4" fill="#FFFFFF" opacity="0.7"/>
+<circle cx="160" cy="196" r="8" fill="none" stroke="#FFFFFF" stroke-width="0.6" opacity="0.25"/>
+<polygon points="158,196 148,191 148,201" fill="#D0E4FF" opacity="0.8"/>
+
+<!-- Exit glow -->
+<circle cx="332" cy="196" r="5" fill="#FFFFFF" opacity="0.5"/>
+<circle cx="332" cy="196" r="12" fill="none" stroke="#FFFFFF" stroke-width="0.5" opacity="0.15"/>
+
+<!-- Q — red -->
+<line x1="332" y1="196" x2="388" y2="65" stroke="#FF3B3B" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="388" cy="65" r="3" fill="#FF3B3B" opacity="0.6"/>
+<text x="404" y="76" class="sl" fill="#FF3B3B" opacity="0.95">Q</text>
+
+<!-- U — orange -->
+<line x1="332" y1="196" x2="406" y2="96" stroke="#FF7A1A" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="406" cy="96" r="3" fill="#FF7A1A" opacity="0.6"/>
+<text x="422" y="107" class="sl" fill="#FF7A1A" opacity="0.95">U</text>
+
+<!-- E — yellow -->
+<line x1="332" y1="196" x2="420" y2="127" stroke="#FFD600" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="420" cy="127" r="3" fill="#FFD600" opacity="0.6"/>
+<text x="436" y="138" class="sl" fill="#FFD600" opacity="0.95">E</text>
+
+<!-- R — green -->
+<line x1="332" y1="196" x2="430" y2="157" stroke="#4ADE80" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="430" cy="157" r="3" fill="#4ADE80" opacity="0.6"/>
+<text x="446" y="168" class="sl" fill="#4ADE80" opacity="0.95">R</text>
+
+<!-- Y — cyan -->
+<line x1="332" y1="196" x2="436" y2="188" stroke="#22D3EE" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="436" cy="188" r="3" fill="#22D3EE" opacity="0.6"/>
+<text x="452" y="199" class="sl" fill="#22D3EE" opacity="0.95">Y</text>
+
+<!-- P — blue -->
+<line x1="332" y1="196" x2="436" y2="218" stroke="#4F8EF7" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="436" cy="218" r="3" fill="#4F8EF7" opacity="0.6"/>
+<text x="452" y="229" class="sl" fill="#4F8EF7" opacity="0.95">P</text>
+
+<!-- R — indigo -->
+<line x1="332" y1="196" x2="430" y2="248" stroke="#6366F1" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="430" cy="248" r="3" fill="#6366F1" opacity="0.6"/>
+<text x="446" y="259" class="sl" fill="#6366F1" opacity="0.95">R</text>
+
+<!-- I — violet -->
+<line x1="332" y1="196" x2="420" y2="275" stroke="#A855F7" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="420" cy="275" r="3" fill="#A855F7" opacity="0.6"/>
+<text x="436" y="286" class="sl" fill="#A855F7" opacity="0.95">I</text>
+
+<!-- S — pink -->
+<line x1="332" y1="196" x2="406" y2="302" stroke="#EC4899" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="406" cy="302" r="3" fill="#EC4899" opacity="0.6"/>
+<text x="422" y="313" class="sl" fill="#EC4899" opacity="0.95">S</text>
+
+<!-- M — rose -->
+<line x1="332" y1="196" x2="388" y2="328" stroke="#F43F5E" stroke-width="1.8" fill="none" opacity="0.8"/>
+<circle cx="388" cy="328" r="3" fill="#F43F5E" opacity="0.6"/>
+<text x="404" y="339" class="sl" fill="#F43F5E" opacity="0.95">M</text>
+
+</svg>

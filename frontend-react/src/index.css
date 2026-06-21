@@ -1,0 +1,31 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* accent */
+  --accent: #4F8EF7;
+  --accent-dim: #3B6FD4;
+  /* light-mode palette (defaults) */
+  --color-surface: #F8FAFC;
+  --color-panel: #FFFFFF;
+  --color-border: #E2E8F0;
+  --color-text: #0F172A;
+  --color-text-dim: #475569;
+  --color-muted: #94A3B8;
+}
+.dark {
+  --color-surface: #0F1117;
+  --color-panel: #161B27;
+  --color-border: #1E2535;
+  --color-text: #E2E8F0;
+  --color-text-dim: #9CA3AF;
+  --color-muted: #6B7280;
+}
+html, body, #root { height: 100%; }
+body { @apply bg-surface text-text font-sans; }
+
+/* chat markdown */
+.prose { @apply text-text leading-relaxed; }
+.prose code { @apply font-mono text-sm bg-panel px-1 rounded; }

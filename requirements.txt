@@ -1,0 +1,43 @@
+# ── Web framework ────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9       # file uploads
+
+# ── Database ─────────────────────────────────
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.35
+psycopg2-binary==2.9.9        # sync fallback / migrations
+
+# ── Vector / graph ───────────────────────────
+pgvector==0.3.2
+neo4j==5.24.0
+
+# ── Task queue ───────────────────────────────
+celery[redis]==5.4.0
+redis==5.1.0
+
+# ── LLM / Embeddings ─────────────────────────
+openai==1.51.0
+anthropic==0.35.0
+cohere==5.11.0                # re-ranking
+
+# ── Document ingestion ───────────────────────
+pdfplumber==0.11.4
+python-docx==1.1.2
+pytesseract==0.3.13
+Pillow==10.4.0
+faster-whisper==1.0.3         # video/audio transcription
+
+# ── Chunking / NLP ───────────────────────────
+llama-index-core==0.11.14
+llama-index-embeddings-openai==0.2.5
+spacy==3.7.6
+tiktoken==0.7.0               # token counting
+
+# ── Auth / utils ─────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+slowapi==0.1.9                # rate limiting
+pydantic-settings==2.5.2
+httpx==0.27.2
+email-validator==2.2.0
