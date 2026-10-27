@@ -8,9 +8,11 @@
 | Language | Python 3.x |
 | Framework | FastAPI 0.115.0 + Uvicorn |
 | Async | asyncio, asyncpg |
-| Task Queue | Celery 5.4.0 + Redis broker |
+| Task Queue | Celery 5.4.0 + dedicated Redis broker |
 | Authentication | JWT (python-jose), OAuth2 (Google) |
-| Rate Limiting | slowapi |
+| Rate Limiting | slowapi (per user, Redis-backed) |
+| Logging / Metrics | structlog (JSON) / prometheus-client |
+| Migrations | Alembic (raw SQL revisions) |
 
 ### Databases & Storage
 | Store | Technology | Purpose |
@@ -60,86 +62,86 @@
 
 ---
 
-## Microservices Architecture
+## Modular Monolith
 
-Query-Prism is split into **5 independent backend services** plus supporting infrastructure.
+Query-Prism runs as **one API process** organised into **bounded contexts**, plus a
+separately deployed **Celery worker** built from the same code (`backend/`).
+Until v2 it was five HTTP microservices sharing one database; see
+`docs/architecture-document.html` for the review that led to the change.
 
 ```
-                          ┌─────────────────────────────┐
-  Browser / Client        │        Nginx Gateway         │  :8000
-                          │  (reverse proxy + SSL)       │
-                          └──────────────┬──────────────┘
-                                         │
-              ┌──────────────┬───────────┼───────────┬───────────┐
-              │              │           │           │           │
-         ┌────▼────┐  ┌──────▼──┐  ┌────▼────┐  ┌──▼──────┐  ┌─▼──────────┐
-         │  Auth   │  │Ingestion│  │  Chat   │  │ Billing │  │Notification│
-         │ :8001   │  │ :8002   │  │ :8003   │  │ :8004   │  │  :8005     │
-         └────┬────┘  └────┬────┘  └────┬────┘  └──┬──────┘  └────────────┘
-              │             │            │           │
-              └─────────────┴────────────┴───────────┘
-                                 │
-              ┌──────────────────┼────────────────────┐
-              │                  │                    │
-         ┌────▼────┐        ┌────▼────┐          ┌───▼───┐
-         │Postgres │        │  Neo4j  │          │ Redis │
-         │ :5434   │        │  :7687  │          │ :6380 │
-         └─────────┘        └─────────┘          └───────┘
-                                                      │
-                                               ┌──────▼──────┐
-                                               │Celery Worker│
-                                               │ (ingestion) │
-                                               └─────────────┘
+        Browser ──► Nginx edge (TLS) ──► Nginx gateway :8000 ──► api :8000
+                                                                   │
+   ┌───────────────────────────── backend/app ─────────────────────┴──────────┐
+   │  retrieval   /chat, /topics/{id}/questions     answers, question history │
+   │      ▼                                                                   │
+   │  knowledge   /ingest, /topics/{id}/documents   documents, chunks, graph  │
+   │      ▼                                                                   │
+   │  workspace   /topics                           topics                    │
+   │      ▼                                                                   │
+   │  identity    /auth, /auth/oauth                companies, users, teams   │
+   │      ▼                                                                   │
+   │  metering /usage · notification /contact · audit /audit                  │
+   │      ▼                                                                   │
+   │  shared      config, db, neo4j, security, rate limit, events, AI clients │
+   └──────────────────────────────────────────────────────────────────────────┘
+          │ send_task("app.worker.ingest_document")
+          ▼
+   redis-broker ──► worker (Celery)  load → chunk → embed → Postgres → Neo4j
 ```
 
----
+### Rules (enforced in CI)
 
-## Service Responsibilities
+| Rule | Enforced by |
+|------|-------------|
+| Contexts depend only downward in the order above | `lint-imports` (pyproject.toml) |
+| A context imports another only through its `api.py` | `tests/architecture/test_boundaries.py` |
+| Each table is written only by the context that owns its schema | `tests/architecture/test_boundaries.py` |
+| Cross-context SQL reads may only shrink (allowlist) | `tests/architecture/test_boundaries.py` |
+| Every table has an owning context | `tests/architecture/test_boundaries.py` |
 
-### Auth Service (`:8001`)
-- Company & user registration
-- Login, JWT issuance, token refresh
-- Google OAuth flow
-- Team creation and membership management
-- Invitation lifecycle (create, preview, accept)
-- Password reset via email token
-- Audit event logging
+When a lower context must trigger work in a higher one it publishes a **domain
+event** (`app/shared/events.py`); handlers are wired in `app/bootstrap.py`:
 
-### Ingestion Service (`:8002`)
-- File upload validation (type, size)
-- Queues Celery background ingestion job
-- Document status tracking
-- Document listing and deletion
+| Event | Published by | Handled by |
+|-------|--------------|-----------|
+| `CompanyRegistered` | identity | workspace creates the default "Main" topic |
+| `DocumentIngested` / `DocumentDeleted` | knowledge | retrieval drops affected cached answers |
+| `TopicDeleted` | workspace | retrieval drops the team's cached answers |
 
-**Celery Worker (background)**
-1. Load & extract text from uploaded file
-2. Chunk text with LlamaIndex SentenceSplitter
-3. Embed chunks with OpenAI (3072-dim vectors)
-4. Run NER with spaCy
-5. Extract entity relationships
-6. Write chunks + embeddings to PostgreSQL
-7. Write entities + relations to Neo4j
-8. Update document status → `completed`
+Metering needs team/user counts for the usage page without reading identity's
+tables: identity implements metering's `TenantDirectory` port (also wired in
+`app/bootstrap.py`).
 
-### Chat Service (`:8003`)
-- Hybrid retrieval: pgvector similarity search + Neo4j graph traversal
-- Cohere re-ranking of retrieved chunks
-- LLM answer generation (Claude or GPT based on plan)
-- Redis caching of query results
-- Server-Sent Events streaming
-- Topic (folder) CRUD and question history
+### Database schemas
 
-### Billing Service (`:8004`)
-- Enforces per-plan quotas (queries, storage, teams, users)
-- Tracks monthly query and storage usage
-- Returns usage stats for the frontend dashboard
-- Called internally by other services; **not exposed externally**
+| Schema | Tables | Owner |
+|--------|--------|-------|
+| `identity` | companies, teams, users, team_members, invites, password_reset_tokens | identity |
+| `workspace` | topics | workspace |
+| `knowledge` | documents, chunks (pgvector halfvec + HNSW) | knowledge |
+| `retrieval` | query_history | retrieval |
+| `metering` | plan_limits, subscriptions | metering |
+| `audit` | audit_log | audit |
 
-### Notification Service (`:8005`)
-- Sends transactional emails via Postfix SMTP relay
-- Invite emails, password reset emails, enterprise contact form
+Migrations are Alembic revisions in `backend/migrations/versions/`, applied by the
+`migrate` compose service before `api` and `worker` start.
 
----
+### Observability
+
+- **Logs**: one JSON object per line (structlog), with `request_id` on every API
+  log line and `document_id` on worker lines. Send `X-Request-ID` to correlate.
+  Tracebacks never include local variables.
+- **Metrics**: `api:8000/metrics` and `worker:9101/metrics` (internal only, not
+  routed by the gateway). Key series: `qp_answer_ttft_seconds`,
+  `qp_answer_cache_total`, `qp_no_context_answers_total`,
+  `qp_retrieval_fallback_total`, `qp_llm_errors_total`,
+  `qp_ingest_duration_seconds`, `qp_documents_by_status`,
+  `http_request_duration_seconds`.
+
+Suggested alerts: `qp_documents_by_status{status="pending"}` > 0 for 15 min;
+`rate(qp_llm_errors_total[5m])` > 5 % of answers; p95 of
+`qp_answer_ttft_seconds` > 4 s for 15 min.
 
 ## Data Flow: Document Ingestion
 
@@ -148,7 +150,7 @@ User uploads file
        │
        ▼
 Ingestion API ──► validates type/size
-       │          ──► checks storage quota (billing svc)
+       │          ──► checks storage quota (metering)
        │          ──► stores metadata in PostgreSQL (status=pending)
        │          ──► saves file to disk
        ▼
@@ -174,7 +176,7 @@ PostgreSQL + Neo4j ready for queries
 User sends query
        │
        ▼
-Chat API ──► checks query quota (billing svc)
+Chat API ──► reserves one query atomically (metering)
        │    ──► checks Redis cache (hit → return cached)
        │
        ▼

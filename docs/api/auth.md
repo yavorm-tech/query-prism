@@ -1,7 +1,7 @@
 # Auth Service API
 
 **Base URL:** `/auth`  
-**Port:** `8001`  
+**Served by:** `api` (port 8000, via the gateway)  
 **Auth:** Bearer JWT (all endpoints except register, login, OAuth, invite preview, and password reset)
 
 ---

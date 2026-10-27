@@ -1,7 +1,7 @@
 # Chat Service API
 
 **Base URL:** `/chat` and `/topics`  
-**Port:** `8003`  
+**Served by:** `api` (port 8000, via the gateway)  
 **Auth:** Bearer JWT (all endpoints)  
 **Rate Limit:** 30 requests / minute per user
 

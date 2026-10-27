@@ -1,7 +1,7 @@
 # Notification Service API
 
 **Base URL:** `/`  
-**Port:** `8005`  
+**Served by:** `api` (port 8000, via the gateway)  
 **Visibility:** Internal endpoints called service-to-service; `/contact` is accessible via Nginx gateway  
 **Transport:** Postfix SMTP relay
 
@@ -56,7 +56,7 @@ Called by other services within the Docker network. Not accessible externally.
 
 ### Send Invite Email
 
-Called by Auth Service when a company admin creates an invite.
+Sent by the identity module (in-process, `app.notification.api`) when a company admin creates an invite.
 
 ```
 POST /notification/invite
@@ -84,7 +84,7 @@ Content-Type: application/json
 
 ### Send Password Reset Email
 
-Called by Auth Service when a user requests password recovery.
+Sent by the identity module (in-process, `app.notification.api`) when a user requests password recovery.
 
 ```
 POST /notification/reset-password

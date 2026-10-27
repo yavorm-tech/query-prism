@@ -1,5 +1,8 @@
 # Sequence Diagrams
 
+> **Note (v2):** this diagram shows the pre-v2 microservices. The same responsibilities now live in modules of one API process (`backend/app/<context>`); see `docs/architecture.md` for the current structure. Flows are unchanged except that service-to-service HTTP calls are now in-process calls.
+
+
 ## 1. User Registration Flow
 
 ```mermaid

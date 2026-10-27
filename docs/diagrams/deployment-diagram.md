@@ -13,76 +13,43 @@ graph TB
     end
 
     subgraph Host["Docker Host (Linux)"]
-        subgraph SSL["SSL Proxy (optional)"]
-            NginxSSL["Nginx SSL\n:80, :443\nCertbot auto-renew"]
-        end
+        NginxSSL["Nginx SSL\n:80, :443\nCertbot auto-renew"]
 
-        subgraph Gateway["query-prism-network"]
-            Nginx["Nginx Gateway\n:8000\n(reverse proxy)"]
-
-            subgraph Backend["Backend Services"]
-                AuthSvc["Auth Service\n:8001\nFastAPI + Uvicorn"]
-                IngestSvc["Ingestion Service\n:8002\nFastAPI + Uvicorn"]
-                ChatSvc["Chat Service\n:8003\nFastAPI + Uvicorn"]
-                BillingSvc["Billing Service\n:8004\nFastAPI + Uvicorn\n(internal only)"]
-                NotifSvc["Notification Service\n:8005\nFastAPI + Uvicorn"]
-            end
-
-            subgraph Workers["Background Workers"]
-                CeleryWorker["Celery Worker\n(document ingestion)"]
-                Flower["Flower Monitor\n:5556"]
-            end
-
-            subgraph DataLayer["Data Layer"]
-                Postgres["PostgreSQL 16\n:5434\n+ pgvector"]
-                Neo4j["Neo4j 5\n:7474 (HTTP)\n:7687 (Bolt)"]
-                Redis["Redis 7\n:6380"]
-                Postfix["Postfix SMTP\n:25 (internal)"]
-            end
-
-            subgraph FrontendServe["Frontend"]
-                ReactApp["React App\n(served by Nginx)"]
-            end
+        subgraph Net["rag_net"]
+            Nginx["Nginx Gateway\n:8000"]
+            ReactApp["React App\n(served by Nginx)"]
+            Migrate["migrate\nalembic upgrade head\n(runs once per deploy)"]
+            API["api :8000\nFastAPI modular monolith\nidentity · metering · notification · audit\nworkspace · knowledge · retrieval"]
+            Worker["worker\nCelery ingestion\nmetrics :9101"]
+            Postgres["PostgreSQL 18 + pgvector\nschema per context"]
+            Neo4j["Neo4j 5.26"]
+            Redis["redis\nanswer cache + rate limits\n(LRU)"]
+            Broker["redis-broker\nCelery queue\n(noeviction, AOF)"]
+            Postfix["Postfix SMTP"]
         end
     end
 
     Browser -->|HTTPS :443| NginxSSL
     NginxSSL -->|HTTP :8000| Nginx
+    NginxSSL -->|/*| ReactApp
+    Nginx -->|all API paths| API
 
-    Nginx -->|/auth/*| AuthSvc
-    Nginx -->|/ingest/*| IngestSvc
-    Nginx -->|/chat/* /topics/*| ChatSvc
-    Nginx -->|/contact/*| NotifSvc
-    Nginx -->|/* static| ReactApp
+    Migrate -->|DDL| Postgres
+    API -->|asyncpg| Postgres
+    API -->|Bolt| Neo4j
+    API -->|cache, rate limits| Redis
+    API -->|send_task| Broker
+    API -->|SMTP| Postfix
+    API -->|HTTPS| OpenAI_API
+    API -->|HTTPS| Anthropic_API
+    API -->|HTTPS| Cohere_API
+    API -->|OAuth| Google
 
-    AuthSvc -->|asyncpg| Postgres
-    AuthSvc -->|HTTP internal| BillingSvc
-    AuthSvc -->|HTTP internal| NotifSvc
-
-    IngestSvc -->|asyncpg| Postgres
-    IngestSvc -->|HTTP internal| BillingSvc
-    IngestSvc -->|Celery task| Redis
-
-    Redis -->|Broker| CeleryWorker
-    CeleryWorker -->|asyncpg| Postgres
-    CeleryWorker -->|Bolt| Neo4j
-    CeleryWorker -->|HTTPS| OpenAI_API
-
-    ChatSvc -->|asyncpg + pgvector| Postgres
-    ChatSvc -->|Bolt| Neo4j
-    ChatSvc -->|GET/SET| Redis
-    ChatSvc -->|HTTP internal| BillingSvc
-    ChatSvc -->|HTTPS| OpenAI_API
-    ChatSvc -->|HTTPS| Anthropic_API
-    ChatSvc -->|HTTPS| Cohere_API
-
-    BillingSvc -->|asyncpg| Postgres
-
-    NotifSvc -->|SMTP| Postfix
-
-    AuthSvc -->|OAuth| Google
-
-    Flower -->|Inspect| Redis
+    Broker --> Worker
+    Worker -->|asyncpg| Postgres
+    Worker -->|Bolt| Neo4j
+    Worker -->|cache invalidation| Redis
+    Worker -->|HTTPS| OpenAI_API
 ```
 
 ---
@@ -92,17 +59,8 @@ graph TB
 | Container | Internal Port | Host Port | Accessible From |
 |-----------|--------------|-----------|----------------|
 | nginx-gateway | 80 | 8000 | Public (via SSL proxy) |
-| auth-service | 8001 | 8001 | Internal + Gateway |
-| ingestion-service | 8002 | 8002 | Internal + Gateway |
-| chat-service | 8003 | 8003 | Internal + Gateway |
-| billing-service | 8004 | 8004 | Internal only |
-| notification-service | 8005 | 8005 | Internal + Gateway (/contact) |
-| postgres | 5432 | 127.0.0.1:5434 (dev overlay) | Internal |
-| neo4j-http | 7474 | 127.0.0.1:7474 (dev overlay) | Internal |
-| neo4j-bolt | 7687 | 127.0.0.1:7687 (dev overlay) | Internal |
-| redis (cache) | 6379 | 127.0.0.1:6380 (dev overlay) | Internal |
-| redis-broker | 6379 | 127.0.0.1:6381 (dev overlay) | Internal |
-| flower | 5555 | 127.0.0.1:5556 (dev overlay) | Dev only |
+| api | 8000 | — | Internal + Gateway |
+| worker | 9101 (metrics) | — | Internal |
 | nginx-ssl | 80/443 | 80/443 | Public |
 
 ---
@@ -115,7 +73,7 @@ graph TB
 | `neo4j_data` | `/data` | Neo4j persistent data |
 | `redis_data` | `/data` | Answer cache snapshot (RDB) |
 | `redis_broker_data` | `/data` | Celery broker persistence (AOF) |
-| `uploads` | `/app/uploads` | Uploaded document files (shared between ingestion svc + celery worker) |
+| `uploads` | `/app/uploads` | Uploaded files awaiting ingestion (shared between api and worker; deleted after ingestion) |
 | `certbot_conf` | `/etc/letsencrypt` | SSL certificate store |
 | `certbot_www` | `/var/www/certbot` | ACME challenge files |
 
@@ -123,24 +81,23 @@ graph TB
 
 ## Network Topology
 
-All services share the `query-prism-network` Docker bridge network. Service-to-service communication uses container names as hostnames:
+All services share the `rag_net` Docker bridge network. There is no service-to-service
+HTTP any more: contexts call each other in-process through their `api.py` modules, and
+the API hands ingestion work to the worker through `redis-broker`.
 
 ```
-auth-service      → http://billing-service:8004
-auth-service      → http://notification-service:8005
-ingestion-service → http://billing-service:8004
-chat-service      → http://billing-service:8004
-celery-worker     → postgresql://postgres:5432/queryprism
-celery-worker     → bolt://neo4j:7687
+api    → postgresql://postgres:5432   (search_path: identity, workspace, knowledge, retrieval, metering, audit, public)
+api    → bolt://neo4j:7687
+api    → redis://redis:6379/0          answer cache, rate limits
+api    → redis://redis-broker:6379/0   enqueue ingestion
+worker → same datastores; consumes redis-broker queue "ingestion"
 ```
-
-The Billing Service and Notification Service (for internal endpoints) are **not routed through Nginx** — only direct internal HTTP is used.
 
 ---
 
 ## Production Deployment Checklist
 
-- [ ] Set `SECRET_KEY` and `INTERNAL_API_TOKEN` to cryptographically random 32+ byte values (enforced at startup)
+- [ ] Set `SECRET_KEY` to a cryptographically random 32+ byte value (enforced at startup)
 - [ ] Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`
 - [ ] Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL`
 - [ ] Configure `SMTP_*` environment variables for email delivery
@@ -148,8 +105,8 @@ The Billing Service and Notification Service (for internal endpoints) are **not 
 - [ ] Set `DATABASE_URL` with production credentials
 - [ ] Set `NEO4J_PASSWORD` to a strong password
 - [ ] Mount persistent volumes for PostgreSQL, Neo4j, Redis, and uploads
-- [ ] Restrict Billing Service (8004) to internal network only (already done in Nginx config)
 - [x] Enable Redis AOF persistence for durability (`redis-broker`)
 - [ ] Schedule `procedures/backup.sh` nightly (cron) and set `BACKUP_S3_URI` for off-host copies
 - [ ] Set up log rotation for all service containers
-- [ ] Configure Flower with authentication for the monitoring UI
+- [x] Flower runs only in the dev overlay, bound to 127.0.0.1
+- [ ] Scrape `api:8000/metrics` and `worker:9101/metrics` with Prometheus

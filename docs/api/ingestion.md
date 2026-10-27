@@ -1,7 +1,7 @@
 # Ingestion Service API
 
 **Base URL:** `/ingest`  
-**Port:** `8002`  
+**Served by:** `api` (port 8000, via the gateway)  
 **Auth:** Bearer JWT (all endpoints)  
 **Rate Limit:** 20 requests / minute per user
 

@@ -1,9 +1,9 @@
-# Billing Service API
+# Metering API (billing)
 
 **Base URL:** `/`  
-**Port:** `8004`  
-**Visibility:** Internal only — not exposed through the Nginx gateway  
-**Auth:** Bearer JWT (for `/usage`); internal endpoints trust Docker network isolation
+**Served by:** `api` (port 8000, via the gateway)  
+**Visibility:** `/usage` through the gateway  
+**Auth:** Bearer JWT
 
 ---
 
@@ -53,179 +53,23 @@ Authorization: Bearer <token>
 
 ---
 
-## Internal Endpoints
+## In-process API (`app.metering.api`)
 
-These are called service-to-service within the Docker network. Not accessible externally.
+The former `/internal/*` HTTP endpoints are gone; other contexts call these
+functions directly. Plan and counters live in `metering.subscriptions`.
 
-### Check Query Limit
+| Function | Used by | Behaviour |
+|----------|---------|-----------|
+| `open_subscription(company_id)` | identity (sign-up) | Creates the `starter` subscription |
+| `get_plan(company_id)` | identity (`/auth/me`) | Current plan name |
+| `reserve_query(company_id)` | retrieval | Atomically consumes one query (rolls the month over); returns the plan's model; 429 when exhausted |
+| `release_query(company_id)` | retrieval | Returns a reserved query when no LLM call happened |
+| `check_storage_limit(company_id, bytes)` | knowledge | 413 when the upload would exceed the plan |
+| `check_team_limit(company_id, team_count)` | identity | 403 `team_limit_reached` |
+| `check_user_limit(company_id, user_count)` | identity | 403 `user_limit_reached` |
+| `increment_storage` / `decrement_storage` | knowledge | Storage counter (never below 0) |
 
-Called by Chat Service before executing any query.
-
-```
-POST /internal/check/queries
-```
-
-**Request Body**
-```json
-{ "company_id": "uuid" }
-```
-
-**Response `200`** — OK, quota available
-```json
-{ "ok": true }
-```
-
-**Response `429`** — Quota exceeded
-```json
-{ "detail": "Monthly query limit reached. Upgrade your plan." }
-```
-
----
-
-### Check Storage Limit
-
-Called by Ingestion Service before accepting a file upload.
-
-```
-POST /internal/check/storage
-```
-
-**Request Body**
-```json
-{
-  "company_id": "uuid",
-  "file_size_bytes": 2097152
-}
-```
-
-**Response `200`** — Storage available
-```json
-{ "ok": true }
-```
-
-**Response `413`** — Storage quota exceeded
-```json
-{ "detail": "Storage limit exceeded. Upgrade your plan or delete documents." }
-```
-
----
-
-### Check Team Limit
-
-Called by Auth Service before creating a new team.
-
-```
-POST /internal/check/teams
-```
-
-**Request Body**
-```json
-{ "company_id": "uuid" }
-```
-
-**Response `200`** — OK
-```json
-{ "ok": true }
-```
-
-**Response `403`** — Team quota exceeded
-```json
-{ "detail": "Team limit reached for your plan." }
-```
-
----
-
-### Check User Limit
-
-Called by Auth Service before accepting an invite.
-
-```
-POST /internal/check/users
-```
-
-**Request Body**
-```json
-{ "company_id": "uuid" }
-```
-
-**Response `200`** — OK
-```json
-{ "ok": true }
-```
-
-**Response `403`** — User quota exceeded
-```json
-{ "detail": "User limit reached for your plan." }
-```
-
----
-
-### Increment Query Counter
-
-Called by Chat Service after a successful (non-cached) query.
-
-```
-POST /internal/queries/increment
-```
-
-**Request Body**
-```json
-{ "company_id": "uuid" }
-```
-
-**Response `200`**
-```json
-{ "ok": true }
-```
-
----
-
-### Decrement Storage
-
-Called by Ingestion Service after a document is deleted.
-
-```
-POST /internal/storage/decrement
-```
-
-**Request Body**
-```json
-{
-  "company_id": "uuid",
-  "file_size_bytes": 2097152
-}
-```
-
-**Response `200`**
-```json
-{ "ok": true }
-```
-
----
-
-### Get LLM Model
-
-Called by Chat Service to determine which LLM to use for the company's plan.
-
-```
-GET /internal/model/{company_id}
-```
-
-**Response `200`**
-```json
-{ "model": "claude-haiku-4-5-20251001" }
-```
-
-**Model Mapping**
-
-| Plan | Model |
-|------|-------|
-| Starter | `gpt-4o-mini` |
-| Team | `claude-haiku-4-5-20251001` |
-| Business | `claude-sonnet-4-6` |
-| Enterprise | `claude-sonnet-4-6` |
-
----
+To change a company's plan: `UPDATE metering.subscriptions SET plan = 'business' WHERE company_id = '…';`
 
 ## Plan Limits Reference
 

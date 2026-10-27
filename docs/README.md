@@ -45,8 +45,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 # Flower (queue):http://localhost:5556   (dev overlay only)
 ```
 
-`SECRET_KEY` and `INTERNAL_API_TOKEN` are required and must be at least 32 random
-characters (`openssl rand -hex 32`); services refuse to start otherwise.
+`SECRET_KEY` is required and must be at least 32 random characters
+(`openssl rand -hex 32`); the API and worker refuse to start otherwise.
 `POSTGRES_PASSWORD` and `NEO4J_PASSWORD` have no defaults.
 
 ---
@@ -55,19 +55,27 @@ characters (`openssl rand -hex 32`); services refuse to start otherwise.
 
 | Service | Port | Description |
 |---------|------|-------------|
-| Nginx Gateway | 8000 | External entry point, routes all traffic |
-| Auth Service | 8001 | Authentication & user management |
-| Ingestion Service | 8002 | File upload & processing |
-| Chat Service | 8003 | RAG query & topics |
-| Billing Service | 8004 | Usage quotas (internal only) |
-| Notification Service | 8005 | Email delivery |
-| PostgreSQL | 5434 (dev overlay) | Primary relational store |
+| Nginx Gateway | 8000 | External API entry point, routes everything to `api` |
+| api | 8000 (internal) | All HTTP endpoints; `/metrics` internal only |
+| worker | 9101 (internal) | Celery ingestion worker; Prometheus metrics |
+| migrate | — | Runs `alembic upgrade head` once per deploy |
+| PostgreSQL | 5434 (dev overlay) | Primary relational store, one schema per context |
 | Neo4j | 7474 / 7687 (dev overlay) | Knowledge graph |
 | Redis (cache) | 6380 (dev overlay) | Answer cache & rate-limit counters, LRU eviction |
 | Redis (broker) | 6381 (dev overlay) | Celery broker & results, noeviction + AOF |
 | Flower | 5556 (dev overlay) | Celery task monitor |
 
----
+## Backend development
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+ruff check . && lint-imports              # lint + architecture contract
+python -m pytest                          # unit + architecture tests
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5434/postgres \
+REDIS_URL=redis://localhost:6380/15 python -m pytest   # + integration tests
+alembic revision -m "describe change"     # new migration (raw SQL in upgrade())
+```
 
 ## Plan Tiers
 

@@ -130,165 +130,97 @@ services:
       - rag_net
 
   # ─────────────────────────────────────────────
-  # Auth Service — port 8001
+  # Migrations — run once per deploy, before api/worker start
   # ─────────────────────────────────────────────
-  auth:
+  migrate:
     build:
-      context: ./services/auth
-      dockerfile: Dockerfile
-    container_name: svc_auth
-    restart: unless-stopped
+      context: ./backend
+      target: api
+    image: query-prism-api
+    container_name: svc_migrate
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
-      BILLING_URL: http://billing:8004
-    mem_limit: 512m
     depends_on:
       postgres:
         condition: service_healthy
-      billing:
-        condition: service_started
     networks:
       - rag_net
 
   # ─────────────────────────────────────────────
-  # Ingestion Service — port 8002
+  # API — all bounded contexts in one FastAPI app, port 8000 (internal)
   # ─────────────────────────────────────────────
-  ingestion:
+  api:
     build:
-      context: ./services/ingestion
-      dockerfile: Dockerfile
-    container_name: svc_ingestion
+      context: ./backend
+      target: api
+    image: query-prism-api
+    container_name: svc_api
     restart: unless-stopped
     env_file: .env
-    environment:
+    environment: &backend_env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis-broker:6379/0
       NEO4J_URL: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
-      BILLING_URL: http://billing:8004
+      SMTP_HOST: postfix
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
     volumes:
       - uploads:/app/uploads
     mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       redis-broker:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-      billing:
+      postfix:
         condition: service_started
     networks:
       - rag_net
 
   # ─────────────────────────────────────────────
-  # Celery Worker (ingestion jobs)
+  # Celery Worker (ingestion jobs) — metrics on :9101 (internal)
   # ─────────────────────────────────────────────
   worker:
     build:
-      context: ./services/ingestion
-      dockerfile: Dockerfile
+      context: ./backend
+      target: worker
+    image: query-prism-worker
     container_name: svc_worker
     restart: unless-stopped
-    command: celery -A app.worker worker --loglevel=info --concurrency=2 -Q ingestion
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis-broker:6379/0
-      NEO4J_URL: bolt://neo4j:7687
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
-      BILLING_URL: http://billing:8004
+      <<: *backend_env
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
     volumes:
       - uploads:/app/uploads
     mem_limit: 4g
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       redis-broker:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-      billing:
-        condition: service_started
     networks:
       - rag_net
-
-  # ─────────────────────────────────────────────
-  # Chat Service — port 8003
-  # ─────────────────────────────────────────────
-  chat:
-    build:
-      context: ./services/chat
-      dockerfile: Dockerfile
-    container_name: svc_chat
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379/0
-      NEO4J_URL: bolt://neo4j:7687
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
-      BILLING_URL: http://billing:8004
-    mem_limit: 1g
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      billing:
-        condition: service_started
-    networks:
-      - rag_net
-
-  # ─────────────────────────────────────────────
-  # Billing Service — port 8004 (internal only)
-  # ─────────────────────────────────────────────
-  billing:
-    build:
-      context: ./services/billing
-      dockerfile: Dockerfile
-    container_name: svc_billing
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
-    mem_limit: 512m
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - rag_net
-
-  # ─────────────────────────────────────────────
-  # Notification Service — port 8005
-  # ─────────────────────────────────────────────
-  notification:
-    build:
-      context: ./services/notification
-      dockerfile: Dockerfile
-    container_name: svc_notification
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      SMTP_HOST: postfix
-      SMTP_USERNAME: ""
-      SMTP_PASSWORD: ""
-    mem_limit: 256m
-    depends_on:
-      - postfix
-    networks:
-      - rag_net
-
   # ─────────────────────────────────────────────
   # Nginx API Gateway — port 8000
   # ─────────────────────────────────────────────
@@ -302,11 +234,8 @@ services:
       - "8000:8000"
     mem_limit: 128m
     depends_on:
-      - auth
-      - ingestion
-      - chat
-      - billing
-      - notification
+      api:
+        condition: service_healthy
     networks:
       - rag_net
 
