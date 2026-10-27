@@ -10,7 +10,7 @@ from app.services.auth import get_current_user, can_access_team
 from app.services.users import get_team
 from app.services.topics import get_topic
 from app.services.rate_limit import limiter
-from app.services.cache import invalidate_team_cache
+from app.services.cache import invalidate_team_cache, invalidate_company_cache
 from app.services.billing_client import check_storage_limit, decrement_storage
 from app.services.graph.writer import delete_document_graph
 from app.services.audit import log_event
@@ -101,22 +101,35 @@ async def ingest_file(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: .{ext}")
 
-    content = await file.read()
-    size_mb = len(content) / (1024 * 1024)
-    if size_mb > settings.max_upload_size_mb:
-        raise HTTPException(413, f"File too large: {size_mb:.1f} MB (max {settings.max_upload_size_mb} MB)")
-
-    await check_storage_limit(current_user["company_id"], len(content))
-
     if visibility not in ("team", "company"):
         raise HTTPException(400, "visibility must be 'team' or 'company'")
+
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    too_large = f"File too large (max {settings.max_upload_size_mb} MB)"
+    if file.size is not None and file.size > max_bytes:
+        raise HTTPException(413, too_large)
+    if file.size is not None:
+        await check_storage_limit(current_user["company_id"], file.size)
 
     document_id = str(uuid.uuid4())
     os.makedirs(settings.upload_dir, exist_ok=True)
     file_path = os.path.join(settings.upload_dir, f"{document_id}.{ext}")
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # Copy in 1 MB pieces so a large upload never sits in memory whole.
+    size_bytes = 0
+    try:
+        with open(file_path, "wb") as f:
+            while piece := await file.read(1024 * 1024):
+                size_bytes += len(piece)
+                if size_bytes > max_bytes:
+                    raise HTTPException(413, too_large)
+                f.write(piece)
+        if file.size is None:
+            await check_storage_limit(current_user["company_id"], size_bytes)
+    except BaseException:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -129,7 +142,7 @@ async def ingest_file(
             """,
             document_id, current_user["company_id"], team_id, topic_id,
             current_user["sub"], os.path.basename(file_path), file.filename,
-            _source_type(ext), len(content), visibility,
+            _source_type(ext), size_bytes, visibility,
         )
 
     from app.worker import ingest_document
@@ -138,7 +151,7 @@ async def ingest_file(
         queue="ingestion",
     )
 
-    await invalidate_team_cache(team_id)
+    # Answer cache is invalidated by the worker once the document is searchable.
     await log_event(
         company_id=current_user["company_id"],
         event_type="document.uploaded",
@@ -148,7 +161,7 @@ async def ingest_file(
         resource_type="document",
         resource_id=document_id,
         resource_name=file.filename,
-        metadata={"size_bytes": len(content), "source_type": _source_type(ext),
+        metadata={"size_bytes": size_bytes, "source_type": _source_type(ext),
                   "topic_id": topic_id, "visibility": visibility},
     )
     logger.info(f"[{current_user['username']}] Queued {task.id} for '{file.filename}' → team {team['name']}")
@@ -273,7 +286,7 @@ async def delete_document(document_id: str, current_user: dict = Depends(get_cur
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, team_id, company_id, uploaded_by, file_size FROM documents WHERE id = $1",
+            "SELECT id, team_id, company_id, uploaded_by, file_size, status, visibility FROM documents WHERE id = $1",
             document_id,
         )
     if not row:
@@ -290,11 +303,15 @@ async def delete_document(document_id: str, current_user: dict = Depends(get_cur
         filename = await conn.fetchval("SELECT original_name FROM documents WHERE id = $1", document_id)
         await conn.execute("DELETE FROM documents WHERE id = $1", document_id)
 
-    if row["file_size"]:
+    # Storage is only counted once ingestion completes (see worker), so only undo it then.
+    if row["file_size"] and row["status"] == "completed":
         await decrement_storage(str(row["company_id"]), row["file_size"])
 
     await delete_document_graph(document_id)
-    await invalidate_team_cache(str(row["team_id"]))
+    if row["visibility"] == "company":
+        await invalidate_company_cache(str(row["company_id"]))
+    else:
+        await invalidate_team_cache(str(row["team_id"]))
 
     await log_event(
         company_id=str(row["company_id"]),

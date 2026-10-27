@@ -95,7 +95,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index   INT  NOT NULL,
     content       TEXT NOT NULL,
     token_count   INT,
-    embedding     vector(3072),
     embedding_hv  halfvec(3072),
     metadata      JSONB DEFAULT '{}',
     created_at    TIMESTAMPTZ DEFAULT now()
@@ -220,10 +219,10 @@ CREATE INDEX IF NOT EXISTS idx_query_history_team     ON query_history(team_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_company      ON audit_log(company_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_team         ON audit_log(team_id, created_at DESC);
 
--- HNSW index — build manually after bulk ingestion:
--- CREATE INDEX chunks_embedding_hnsw_idx
--- ON chunks USING hnsw (embedding_hv halfvec_cosine_ops)
--- WITH (m = 16, ef_construction = 64);
+-- HNSW index for vector search (see migrations/005 for existing databases)
+CREATE INDEX IF NOT EXISTS chunks_embedding_hv_hnsw_idx
+    ON chunks USING hnsw (embedding_hv halfvec_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 
 -- ── Updated_at triggers ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at()

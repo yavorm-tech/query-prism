@@ -1,4 +1,5 @@
 import logging
+from html import escape
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from app.services.email import send_email
@@ -23,16 +24,18 @@ async def enterprise_contact(body: EnterpriseInquiry):
 
     settings = get_settings()
 
+    name, email, company = escape(body.name), escape(str(body.email)), escape(body.company_name)
+    size, message = escape(body.company_size), escape(body.message)
     html = f"""
     <h2 style="color:#1a1a2e">Enterprise Inquiry — AskYourBase</h2>
     <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
-      <tr><td style="padding:6px 12px;color:#666">Name</td><td style="padding:6px 12px">{body.name}</td></tr>
-      <tr><td style="padding:6px 12px;color:#666">Email</td><td style="padding:6px 12px">{body.email}</td></tr>
-      <tr><td style="padding:6px 12px;color:#666">Company</td><td style="padding:6px 12px">{body.company_name}</td></tr>
-      <tr><td style="padding:6px 12px;color:#666">Company size</td><td style="padding:6px 12px">{body.company_size}</td></tr>
+      <tr><td style="padding:6px 12px;color:#666">Name</td><td style="padding:6px 12px">{name}</td></tr>
+      <tr><td style="padding:6px 12px;color:#666">Email</td><td style="padding:6px 12px">{email}</td></tr>
+      <tr><td style="padding:6px 12px;color:#666">Company</td><td style="padding:6px 12px">{company}</td></tr>
+      <tr><td style="padding:6px 12px;color:#666">Company size</td><td style="padding:6px 12px">{size}</td></tr>
     </table>
     <p style="font-family:sans-serif;font-size:14px;margin-top:16px"><strong>Message:</strong></p>
-    <p style="font-family:sans-serif;font-size:14px;white-space:pre-wrap">{body.message}</p>
+    <p style="font-family:sans-serif;font-size:14px;white-space:pre-wrap">{message}</p>
     """
 
     text = (

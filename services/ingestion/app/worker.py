@@ -11,10 +11,12 @@ from app.config import get_settings
 setting = get_settings()
 logger = logging.getLogger(__name__)
 
+# Broker and results live on a dedicated Redis with noeviction; the answer
+# cache Redis evicts under memory pressure and would silently drop queued tasks.
 celery_app = Celery(
     "rag_worker",
-    broker=setting.redis_url,
-    backend=setting.redis_url,
+    broker=setting.celery_broker_url,
+    backend=setting.celery_broker_url,
     include=["app.worker", "app.graph_worker"],
 )
 
@@ -26,6 +28,7 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     broker_connection_retry_on_startup=True,
+    result_expires=24 * 3600,
     task_routes={
         "app.worker.ingest_document":              {"queue": "ingestion"},
         "app.graph_worker.build_knowledge_graph":  {"queue": "ingestion"},
@@ -48,16 +51,24 @@ def run_async(coro):
     default_retry_delay=30,
 )
 def ingest_document(self, document_id: str, file_path: str, source_type: str):
-    logger.info(f"[{document_id}] Starting ingestion: {file_path}")
+    logger.info(f"[{document_id}] Starting ingestion: {file_path} (attempt {self.request.retries + 1})")
     try:
         run_async(_ingest_async(document_id, file_path, source_type))
     except Exception as exc:
-        logger.error(f"[{document_id}] Ingestion failed: {exc}", exc_info=True)
+        if self.request.retries < self.max_retries:
+            # Keep the file: the retry needs it.
+            logger.warning(f"[{document_id}] Ingestion attempt failed, retrying: {exc}")
+            raise self.retry(exc=exc)
+        logger.error(f"[{document_id}] Ingestion failed after {self.max_retries + 1} attempts: {exc}", exc_info=True)
         run_async(_mark_failed(document_id, str(exc)))
-        raise self.retry(exc=exc)
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        _remove_file(file_path)
+        raise
+    _remove_file(file_path)
+
+
+def _remove_file(file_path: str) -> None:
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
 
 async def _ingest_async(document_id: str, file_path: str, source_type: str):
@@ -112,7 +123,7 @@ async def _ingest_async(document_id: str, file_path: str, source_type: str):
         logger.info(f"[{document_id}] Embedding {len(texts)} chunks...")
         embeddings = await embed_texts(texts)
 
-        # 5. Insert chunks
+        # 5. Insert chunks (replacing any left by a failed earlier attempt)
         logger.info(f"[{document_id}] Inserting {len(chunks)} chunks into pgvector...")
         records = [
             (
@@ -127,34 +138,37 @@ async def _ingest_async(document_id: str, file_path: str, source_type: str):
             for i, chunk in enumerate(chunks)
         ]
 
-        await conn.executemany(
-            """
-            INSERT INTO chunks
-                (id, document_id, chunk_index, content, token_count, embedding, embedding_hv,  metadata)
-            VALUES
-                ($1, $2, $3, $4, $5, $6::vector, $6::halfvec, $7)
-            """,
-            records,
-        )
+        async with conn.transaction():
+            await conn.execute("DELETE FROM chunks WHERE document_id = $1", document_id)
+            await conn.executemany(
+                """
+                INSERT INTO chunks
+                    (id, document_id, chunk_index, content, token_count, embedding_hv, metadata)
+                VALUES
+                    ($1, $2, $3, $4, $5, $6::halfvec, $7)
+                """,
+                records,
+            )
 
         logger.info(f"[{document_id}] Inserted {len(chunks)} chunks")
 
-        # 6. Mark complete
+        # 6. Count storage (billing owns the counter), then mark complete.
+        doc_row = await conn.fetchrow(
+            "SELECT company_id, team_id, visibility, file_size FROM documents WHERE id = $1", document_id
+        )
+        if doc_row and doc_row["file_size"]:
+            from app.services.billing_client import increment_storage
+            await increment_storage(str(doc_row["company_id"]), doc_row["file_size"])
+
         await conn.execute(
             "UPDATE documents SET status='completed', updated_at=now() WHERE id=$1",
             document_id
         )
         logger.info(f"[{document_id}] Ingestion complete")
 
-        # 7. Increment company storage counter
-        doc_row = await conn.fetchrow(
-            "SELECT company_id, file_size FROM documents WHERE id = $1", document_id
-        )
-        if doc_row and doc_row["file_size"]:
-            await conn.execute(
-                "UPDATE companies SET storage_used_bytes = storage_used_bytes + $2 WHERE id = $1",
-                str(doc_row["company_id"]), doc_row["file_size"],
-            )
+        # 7. Drop cached answers that were computed without this document
+        if doc_row:
+            _invalidate_answer_cache(doc_row)
 
         # 8. Chain KG extraction
         from app.graph_worker import build_knowledge_graph
@@ -163,6 +177,28 @@ async def _ingest_async(document_id: str, file_path: str, source_type: str):
 
     finally:
         await conn.close()
+
+
+def _invalidate_answer_cache(doc_row) -> None:
+    """
+    Sync counterpart of services.cache.invalidate_*_cache: the async client there is
+    bound to one event loop, and each Celery task runs in a fresh loop.
+    """
+    import redis
+    from app.services.cache import _team_index_key, _company_index_key
+
+    index_key = (
+        _company_index_key(str(doc_row["company_id"])) if doc_row["visibility"] == "company"
+        else _team_index_key(str(doc_row["team_id"]))
+    )
+    try:
+        r = redis.Redis.from_url(setting.redis_url, decode_responses=True)
+        keys = r.smembers(index_key)
+        if keys:
+            r.delete(*keys, index_key)
+        logger.info(f"Cache invalidated {len(keys)} entries ({index_key})")
+    except Exception as e:
+        logger.warning(f"Cache invalidation failed: {e}")
 
 
 async def _mark_failed(document_id: str, error: str):

@@ -1,0 +1,37 @@
+# Local development overlay. Publishes datastore ports on 127.0.0.1 only and
+# adds Flower. Never use on a server reachable from the internet.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5434:5432"
+
+  neo4j:
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+
+  redis:
+    ports:
+      - "127.0.0.1:6380:6379"
+
+  redis-broker:
+    ports:
+      - "127.0.0.1:6381:6379"
+
+  # Celery task monitor
+  flower:
+    image: mher/flower:2.0
+    container_name: rag_flower
+    restart: on-failure
+    command: celery --broker=redis://redis-broker:6379/0 flower --port=5555
+    ports:
+      - "127.0.0.1:5556:5555"
+    mem_limit: 256m
+    depends_on:
+      redis-broker:
+        condition: service_healthy
+    networks:
+      - rag_net

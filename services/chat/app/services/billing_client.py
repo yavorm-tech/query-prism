@@ -1,29 +1,54 @@
+import logging
 import httpx
 from fastapi import HTTPException
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# Used when billing is unreachable: keep answering, but on the cheapest model.
+FALLBACK_MODEL = "gpt-4o-mini"
 
 
 def _billing_url(path: str) -> str:
     return f"{get_settings().billing_url}{path}"
 
 
-async def check_query_limit(company_id: str) -> None:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        r = await client.post(_billing_url("/internal/check/queries"), json={"company_id": company_id})
+def _headers() -> dict:
+    return {"X-Internal-Token": get_settings().internal_api_token}
+
+
+async def reserve_query(company_id: str) -> tuple[str, bool]:
+    """
+    Atomically consume one query from the company's quota.
+    Returns (model, reserved). reserved is False when billing was unreachable
+    and we failed open — callers must not release in that case.
+    Raises 429 when the quota is exhausted.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                _billing_url("/internal/queries/reserve"),
+                json={"company_id": company_id}, headers=_headers(),
+            )
+    except httpx.HTTPError as e:
+        logger.error(f"Billing unreachable, failing open for company {company_id}: {e}")
+        return FALLBACK_MODEL, False
+
     if r.status_code == 429:
         raise HTTPException(429, r.json().get("detail", "Query limit reached"))
     if not r.is_success:
-        raise HTTPException(502, "Billing service error")
+        logger.error(f"Billing reserve failed ({r.status_code}), failing open for company {company_id}")
+        return FALLBACK_MODEL, False
+    return r.json().get("model") or FALLBACK_MODEL, True
 
 
-async def increment_query_count(company_id: str) -> None:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        await client.post(_billing_url("/internal/queries/increment"), json={"company_id": company_id})
-
-
-async def get_company_model(company_id: str) -> str:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        r = await client.get(_billing_url(f"/internal/model/{company_id}"))
-    if r.is_success:
-        return r.json().get("model", "claude-haiku-4-5-20251001")
-    return "claude-haiku-4-5-20251001"
+async def release_query(company_id: str) -> None:
+    """Return a reserved query that did not lead to an LLM call."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                _billing_url("/internal/queries/release"),
+                json={"company_id": company_id}, headers=_headers(),
+            )
+    except httpx.HTTPError as e:
+        logger.warning(f"Failed to release query for company {company_id}: {e}")

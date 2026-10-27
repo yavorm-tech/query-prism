@@ -4,11 +4,11 @@ from fastapi import APIRouter, HTTPException, Depends, Request, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.services.retriever import retrieve
-from app.services.llm import generate_answer, stream_answer, get_company_model
+from app.services.llm import generate_answer, stream_answer
 from app.services.auth import get_current_user, can_access_team
 from app.services.rate_limit import limiter
 from app.services.cache import get_cached, set_cached
-from app.services.billing_client import check_query_limit, increment_query_count
+from app.services.billing_client import reserve_query, release_query
 from app.db.connection import get_pool
 from app.services.audit import log_event
 
@@ -93,23 +93,33 @@ async def chat(request: Request, body: ChatRequest, current_user: dict = Depends
     if body.team_id and not can_access_team(current_user, body.team_id):
         raise HTTPException(403, "You do not have access to this team")
 
-    await check_query_limit(current_user["company_id"])
-    model = await get_company_model(current_user["company_id"])
+    company_id = current_user["company_id"]
+    # Reserve before any work so concurrent requests can't overshoot the quota;
+    # give it back on every path that doesn't reach the LLM.
+    model, reserved = await reserve_query(company_id)
+    try:
+        if not body.skip_cache:
+            cached = await get_cached(current_user, body.query, body.team_id)
+            if cached:
+                if reserved:
+                    await release_query(company_id)
+                return ChatResponse(
+                    answer=cached["answer"], sources=_format_sources(cached["sources"]),
+                    query=body.query, cached=True,
+                )
 
-    if not body.skip_cache:
-        cached = await get_cached(current_user, body.query, body.team_id)
-        if cached:
-            return ChatResponse(
-                answer=cached["answer"], sources=_format_sources(cached["sources"]),
-                query=body.query, cached=True,
-            )
+        context, sources = await retrieve(query=body.query, user=current_user, team_id=body.team_id, source_type=body.source_type)
+        if not context:
+            if reserved:
+                await release_query(company_id)
+            return ChatResponse(answer=_no_docs_message(current_user, body.team_id), sources=[], query=body.query)
 
-    context, sources = await retrieve(query=body.query, user=current_user, team_id=body.team_id, source_type=body.source_type)
-    if not context:
-        return ChatResponse(answer=_no_docs_message(current_user, body.team_id), sources=[], query=body.query)
+        answer = await generate_answer(body.query, context, sources, model=model)
+    except Exception:
+        if reserved:
+            await release_query(company_id)
+        raise
 
-    answer = await generate_answer(body.query, context, sources, model=model)
-    await increment_query_count(current_user["company_id"])
     await _save_question(current_user, body.query, body.team_id, None, answer)
 
     serialized = _sources_to_cache(sources)
@@ -133,15 +143,17 @@ async def chat_stream(
     if team_id and not can_access_team(current_user, team_id):
         raise HTTPException(403, "You do not have access to this team")
 
-    await check_query_limit(current_user["company_id"])
-    model = await get_company_model(current_user["company_id"])
     company_id = current_user["company_id"]
+    model, reserved = await reserve_query(company_id)
 
     async def event_generator():
+        llm_started = False
         try:
             if not skip_cache:
                 cached = await get_cached(current_user, query, team_id)
                 if cached:
+                    if reserved:
+                        await release_query(company_id)
                     words = cached["answer"].split(" ")
                     for i, word in enumerate(words):
                         token = word if i == len(words) - 1 else word + " "
@@ -154,17 +166,19 @@ async def chat_stream(
                 query=query, user=current_user, team_id=team_id, topic_id=topic_id, source_type=source_type,
             )
             if not context:
+                if reserved:
+                    await release_query(company_id)
                 yield _sse({"type": "token", "content": _no_docs_message(current_user, team_id)})
                 yield _sse({"type": "sources", "content": []})
                 yield _sse({"type": "done"})
                 return
 
             full_answer = ""
+            llm_started = True
             async for token in stream_answer(query, context, sources, model=model):
                 full_answer += token
                 yield _sse({"type": "token", "content": token})
 
-            await increment_query_count(company_id)
             await _save_question(current_user, query, team_id, topic_id, full_answer)
 
             topic_name: str | None = None
@@ -194,7 +208,10 @@ async def chat_stream(
 
         except Exception as e:
             logger.error(f"Stream error: {e}", exc_info=True)
-            yield _sse({"type": "error", "content": str(e)})
+            # An LLM call that started is billed by the provider, so it stays counted.
+            if reserved and not llm_started:
+                await release_query(company_id)
+            yield _sse({"type": "error", "content": "Something went wrong while answering. Please try again."})
 
     return StreamingResponse(
         event_generator(),

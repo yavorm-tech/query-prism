@@ -1,11 +1,21 @@
+import hmac
 import logging
-from fastapi import APIRouter, HTTPException
+from html import escape
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from app.services.email import send_email
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/notification", tags=["notification"])
+
+
+def verify_internal_token(x_internal_token: str = Header(default="")) -> None:
+    if not hmac.compare_digest(x_internal_token, get_settings().internal_api_token):
+        raise HTTPException(401, "Invalid internal token")
+
+
+# Called only by the auth service; the gateway does not route /notification.
+router = APIRouter(prefix="/notification", tags=["notification"], dependencies=[Depends(verify_internal_token)])
 
 
 class InviteEmailRequest(BaseModel):
@@ -24,13 +34,14 @@ class ResetPasswordEmailRequest(BaseModel):
 async def send_invite_email(req: InviteEmailRequest):
     app_name = get_settings().app_name
     subject = f"You've been invited to join {req.team_name} at {app_name}"
+    team, company, url = escape(req.team_name), escape(req.company_name), escape(req.accept_url, quote=True)
     body_html = f"""
     <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
       <h2 style="color: #1a1a2e;">You're invited!</h2>
-      <p>You've been invited to join the <strong>{req.team_name}</strong> team
-         at <strong>{req.company_name}</strong> on {app_name}.</p>
+      <p>You've been invited to join the <strong>{team}</strong> team
+         at <strong>{company}</strong> on {app_name}.</p>
       <p style="margin: 24px 0;">
-        <a href="{req.accept_url}"
+        <a href="{url}"
            style="background:#4F8EF7;color:white;padding:12px 24px;border-radius:8px;
                   text-decoration:none;font-weight:600;">
           Accept Invitation
@@ -58,12 +69,13 @@ async def send_invite_email(req: InviteEmailRequest):
 async def send_reset_email(req: ResetPasswordEmailRequest):
     app_name = get_settings().app_name
     subject = f"Reset your {app_name} password"
+    url = escape(req.reset_url, quote=True)
     body_html = f"""
     <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
       <h2 style="color: #1a1a2e;">Reset your password</h2>
       <p>We received a request to reset the password for your {app_name} account.</p>
       <p style="margin: 24px 0;">
-        <a href="{req.reset_url}"
+        <a href="{url}"
            style="background:#4F8EF7;color:white;padding:12px 24px;border-radius:8px;
                   text-decoration:none;font-weight:600;">
           Reset Password

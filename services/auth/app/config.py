@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -7,7 +8,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     api_env: str = "development"
     log_level: str = "debug"
-    secret_key: str = "changeme"
+    secret_key: str                      # required: signs and verifies JWTs
+    internal_api_token: str              # required: authenticates service-to-service calls
     billing_url: str = "http://billing:8004"
     notification_url: str = "http://notification:8005"
     app_url: str = "http://localhost:3001"
@@ -25,6 +27,13 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@chatbot-app.com"
+
+    @field_validator("secret_key", "internal_api_token")
+    @classmethod
+    def _require_strong_secret(cls, v: str) -> str:
+        if v == "changeme" or len(v) < 32:
+            raise ValueError("must be set to a random value of at least 32 characters")
+        return v
 
     class Config:
         env_file = ".env"

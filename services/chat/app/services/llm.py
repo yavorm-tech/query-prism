@@ -1,8 +1,7 @@
-"""LLM service for chat — mirrors the monolith version but uses local DB for model lookup."""
+"""LLM service for chat. The model per company comes from billing (reserve_query)."""
 import logging
 from typing import AsyncGenerator
 from app.config import get_settings
-from app.db.connection import get_pool
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -95,16 +94,3 @@ async def _openai_stream(query: str, context: str, sources: list[dict], model: s
         if delta:
             yield delta
 
-
-async def get_company_model(company_id: str) -> str:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        model = await conn.fetchval(
-            """
-            SELECT pl.llm_model FROM companies c
-            JOIN plan_limits pl ON pl.plan = c.plan
-            WHERE c.id = $1
-            """,
-            company_id,
-        )
-    return model or DEFAULT_MODEL

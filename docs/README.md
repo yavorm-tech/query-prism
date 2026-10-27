@@ -33,14 +33,21 @@
 cp .env.example .env
 # Edit .env with your API keys and secrets
 
-# Start all services
+# Start all services (production: no datastore ports published)
 docker compose up -d
+
+# Local development: also publishes datastore ports on 127.0.0.1 and starts Flower
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 # Access
 # Frontend:      http://localhost:3000
 # API Gateway:   http://localhost:8000
-# Flower (queue):http://localhost:5556
+# Flower (queue):http://localhost:5556   (dev overlay only)
 ```
+
+`SECRET_KEY` and `INTERNAL_API_TOKEN` are required and must be at least 32 random
+characters (`openssl rand -hex 32`); services refuse to start otherwise.
+`POSTGRES_PASSWORD` and `NEO4J_PASSWORD` have no defaults.
 
 ---
 
@@ -54,10 +61,11 @@ docker compose up -d
 | Chat Service | 8003 | RAG query & topics |
 | Billing Service | 8004 | Usage quotas (internal only) |
 | Notification Service | 8005 | Email delivery |
-| PostgreSQL | 5434 | Primary relational store |
-| Neo4j | 7474 / 7687 | Knowledge graph |
-| Redis | 6380 | Cache & task broker |
-| Flower | 5556 | Celery task monitor |
+| PostgreSQL | 5434 (dev overlay) | Primary relational store |
+| Neo4j | 7474 / 7687 (dev overlay) | Knowledge graph |
+| Redis (cache) | 6380 (dev overlay) | Answer cache & rate-limit counters, LRU eviction |
+| Redis (broker) | 6381 (dev overlay) | Celery broker & results, noeviction + AOF |
+| Flower | 5556 (dev overlay) | Celery task monitor |
 
 ---
 

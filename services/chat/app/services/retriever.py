@@ -11,6 +11,7 @@ import logging
 import asyncio
 import asyncpg
 from app.config import get_settings
+from app.db.connection import get_pool
 from app.services.embedder import embed_texts
 
 settings = get_settings()
@@ -120,7 +121,12 @@ async def _vector_search(
         LIMIT {top_k_param}
     """
 
-    rows = await conn.fetch(sql, *params)
+    async with conn.transaction():
+        # The HNSW index returns ef_search candidates before the tenant/team filters
+        # are applied; iterative scan keeps searching until LIMIT rows survive them.
+        await conn.execute("SET LOCAL hnsw.ef_search = 100")
+        await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+        rows = await conn.fetch(sql, *params)
     return [dict(r) for r in rows]
 
 async def _graph_search(
@@ -133,7 +139,9 @@ async def _graph_search(
 ) -> list[dict]:
     from app.services.graph.query import find_related_chunk_ids
 
-    chunk_ids = await find_related_chunk_ids(query_text, max_hops=2, max_chunks=top_k)
+    # Neo4j has no tenant data, so its LIMIT would count other companies' chunks.
+    # Over-fetch there and apply access rules + the real limit in Postgres.
+    chunk_ids = await find_related_chunk_ids(query_text, max_hops=2, max_chunks=top_k * 10)
     if not chunk_ids:
         return []
 
@@ -190,6 +198,7 @@ async def _graph_search(
         WHERE {access_where}
           AND c.id = ANY($1::uuid[])
           {extra}
+        LIMIT {top_k}
     """
 
     rows = await conn.fetch(sql, *params)
@@ -279,24 +288,24 @@ async def retrieve(
     embeddings = await embed_texts([query])
     query_embedding = embeddings[0]
 
-    dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    conn = await asyncpg.connect(dsn=dsn)
+    # Each search gets its own pooled connection: asyncpg can't run two
+    # queries concurrently on one connection.
+    pool = await get_pool()
 
-    try:
-        await conn.set_type_codec(
-            "vector",
-            encoder=lambda v: str(v),
-            decoder=lambda v: v,
-            schema="public",
-            format="text",
-        )
+    async def vector() -> list[dict]:
+        async with pool.acquire() as conn:
+            return await _vector_search(conn, query_embedding, user, top_k_vector, source_type, team_id, topic_id)
 
-        vector_results, graph_results = await asyncio.gather(
-            _vector_search(conn, query_embedding, user, top_k_vector, source_type, team_id, topic_id),
-            _graph_search(conn, query, user, top_k_graph, team_id, topic_id),
-        )
-    finally:
-        await conn.close()
+    async def graph() -> list[dict]:
+        try:
+            async with pool.acquire() as conn:
+                return await _graph_search(conn, query, user, top_k_graph, team_id, topic_id)
+        except Exception as e:
+            # The graph is an enrichment; answer from vector results alone if it fails.
+            logger.warning(f"Graph search failed, continuing with vector results: {e}")
+            return []
+
+    vector_results, graph_results = await asyncio.gather(vector(), graph())
 
     role = user.get("role", "member")
     team_ids = user.get("team_ids", [])

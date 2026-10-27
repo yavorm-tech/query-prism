@@ -15,9 +15,10 @@
 ### Databases & Storage
 | Store | Technology | Purpose |
 |-------|-----------|---------|
-| Primary DB | PostgreSQL 16 + pgvector | Relational data, vector embeddings |
+| Primary DB | PostgreSQL 18 + pgvector 0.8 (halfvec + HNSW) | Relational data, vector embeddings |
 | Graph DB | Neo4j 5 | Knowledge graph (entities & relations) |
-| Cache / Broker | Redis 7 | Query cache, Celery task broker |
+| Cache | Redis 7 (`redis`) | Answer cache, rate-limit counters (LRU eviction) |
+| Broker | Redis 7 (`redis-broker`) | Celery broker + results (noeviction, AOF) |
 
 ### AI / ML
 | Component | Technology |
@@ -151,7 +152,7 @@ Ingestion API ──► validates type/size
        │          ──► stores metadata in PostgreSQL (status=pending)
        │          ──► saves file to disk
        ▼
-Celery Queue (Redis)
+Celery Queue (redis-broker)
        │
        ▼
 Celery Worker

@@ -1,0 +1,907 @@
+<title>Query Prism Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky top bar · 240px sticky section rail · single reading column (max 920px) */
+:root {
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --surface-2: #eef0f7;
+  --ink: #1b1d2e;
+  --ink-2: #4a4e66;
+  --ink-3: #7a7e96;
+  --line: #dcdfeb;
+  --accent: #5b3fd6;          /* prism violet */
+  --accent-2: #0e8fa8;        /* refracted cyan */
+  --accent-soft: #ece8fd;
+  --ok: #1f8a4c;   --ok-soft: #e3f4ea;
+  --warn: #b26a00; --warn-soft: #fdf1dc;
+  --bad: #c0362c;  --bad-soft: #fbe6e4;
+  --muted: #8b8fa3;
+  --code-bg: #f1f2f8;
+  --code-ink: #2a2d42;
+  --kw: #5b3fd6; --st: #1f7a52; --cm: #8b8fa3; --fn: #0e7f96;
+  --display: "DM Serif Display", Georgia, "Times New Roman", serif;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --bar-h: 56px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12131c; --surface: #1a1c28; --surface-2: #222536; --ink: #e8e9f2; --ink-2: #b4b7cc; --ink-3: #868aa3;
+    --line: #2e3146; --accent: #a993ff; --accent-2: #4cc7de; --accent-soft: #2a2450;
+    --ok: #5fd08d; --ok-soft: #173326; --warn: #f0b350; --warn-soft: #3a2c12; --bad: #f2786d; --bad-soft: #3d1c1a;
+    --muted: #7d8199; --code-bg: #161824; --code-ink: #dcdef0; --kw: #b9a6ff; --st: #7fd6a4; --cm: #737791; --fn: #6fd3e6;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12131c; --surface: #1a1c28; --surface-2: #222536; --ink: #e8e9f2; --ink-2: #b4b7cc; --ink-3: #868aa3;
+  --line: #2e3146; --accent: #a993ff; --accent-2: #4cc7de; --accent-soft: #2a2450;
+  --ok: #5fd08d; --ok-soft: #173326; --warn: #f0b350; --warn-soft: #3a2c12; --bad: #f2786d; --bad-soft: #3d1c1a;
+  --muted: #7d8199; --code-bg: #161824; --code-ink: #dcdef0; --kw: #b9a6ff; --st: #7fd6a4; --cm: #737791; --fn: #6fd3e6;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: calc(var(--bar-h) + 16px); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.6; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+
+/* Top bar */
+.topbar {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; height: var(--bar-h);
+  display: flex; align-items: center; gap: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; font-family: var(--display); font-size: 21px; letter-spacing: .2px; white-space: nowrap; }
+.prism { width: 22px; height: 22px; flex: none; }
+.badge { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.ver { font-family: var(--mono); font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.spacer { flex: 1; }
+.theme-btn { font: inherit; font-size: 13px; color: var(--ink-2); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.theme-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+.theme-btn:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 560px) { .ver { display: none; } }
+
+/* Shell */
+.shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); }
+.side {
+  position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--bar-h)); align-self: start;
+  height: calc(100vh - var(--bar-h) - env(safe-area-inset-top, 0px)); overflow-y: auto;
+  padding: 20px 12px 24px max(16px, env(safe-area-inset-left, 0px)); border-right: 1px solid var(--line);
+}
+.side h4 { margin: 0 0 8px 8px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.side nav { display: flex; flex-direction: column; gap: 1px; }
+.side a {
+  display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 4px;
+  padding: 5px 8px; border-radius: 6px; color: var(--ink-2); text-decoration: none; font-size: 13.5px; line-height: 1.3;
+}
+.side a .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.side a:hover { background: var(--surface-2); color: var(--ink); }
+.side a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.side a.active .n { color: var(--accent); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); } .dot.grey { background: var(--muted); }
+.side .sep { height: 1px; background: var(--line); margin: 10px 8px; }
+
+main { min-width: 0; padding-block: 32px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.col { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+@media (min-width: 721px) { main { padding-left: 40px; padding-right: max(40px, env(safe-area-inset-right, 0px)); } }
+@media (max-width: 720px) { .shell { grid-template-columns: minmax(0, 1fr); } .side { display: none; } }
+
+/* Type */
+h1, h2, h3 { text-wrap: balance; }
+h1 { font-family: var(--display); font-weight: 400; font-size: clamp(30px, 5vw, 42px); line-height: 1.1; margin: 0; }
+h2 { font-family: var(--display); font-weight: 400; font-size: 28px; line-height: 1.2; margin: 0; }
+h3 { font-size: 15px; font-weight: 600; margin: 8px 0 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { font-size: 17px; color: var(--ink-2); max-width: 64ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: .04em; }
+section { display: flex; flex-direction: column; gap: 16px; }
+.sec-head { display: flex; flex-direction: column; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.sec-head .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+ul.tight { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; max-width: 70ch; }
+code { font-family: var(--mono); font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+strong { font-weight: 600; }
+a { color: var(--accent); }
+
+/* Pills */
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.info { background: var(--accent-soft); color: var(--accent); }
+.pill.plain { background: var(--surface-2); color: var(--ink-2); }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Callouts */
+.callout { border-radius: 8px; padding: 12px 16px; border: 1px solid; font-size: 14px; }
+.callout p { max-width: none; }
+.callout b { display: block; font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase; margin-bottom: 2px; }
+.callout.ok { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.callout.ok b { color: var(--ok); }
+.callout.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.callout.warn b { color: var(--warn); }
+.callout.bad { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.callout.bad b { color: var(--bad); }
+
+/* Tables */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 11.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); background: var(--surface-2); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-2); }
+td.mono, td code { font-family: var(--mono); font-size: 12.5px; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.m-get { color: var(--ok); font-weight: 600; } .m-post { color: var(--accent); font-weight: 600; }
+.m-put, .m-patch { color: var(--warn); font-weight: 600; } .m-del { color: var(--bad); font-weight: 600; }
+
+/* Code */
+pre { margin: 0; overflow-x: auto; background: var(--code-bg); color: var(--code-ink); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; }
+pre code { background: none; padding: 0; font-size: inherit; }
+.kw { color: var(--kw); } .st { color: var(--st); } .cm { color: var(--cm); font-style: italic; } .fn { color: var(--fn); }
+.code-cap { font-size: 12px; color: var(--ink-3); font-family: var(--mono); margin-bottom: -10px; }
+
+/* Domain status grid (summary) */
+.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.status-grid a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); text-decoration: none; font-size: 13.5px; }
+.status-grid a:hover { border-color: var(--ink-3); }
+.status-grid .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.status-grid .t { flex: 1; min-width: 0; }
+
+/* Bounded contexts */
+.bc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.bc { background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--c); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bc h3 { margin: 0; font-size: 15px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.bc .kind { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--c); }
+.bc p { font-size: 13px; color: var(--ink-2); }
+.bc .ents { display: flex; flex-wrap: wrap; gap: 4px; }
+.bc .ents span { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
+.bc .svc { font-size: 12px; color: var(--ink-3); }
+
+/* Two-column compare */
+.compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.compare > div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.compare h3 { margin: 0; font-size: 13px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+
+/* Timeline */
+.timeline { display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow-x: auto; }
+.phase { padding: 16px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.phase:last-child { border-right: 0; }
+.phase .when { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+.phase h3 { margin: 0; font-family: var(--display); font-weight: 400; font-size: 20px; }
+.phase ul { margin: 0; padding-left: 16px; font-size: 13px; color: var(--ink-2); display: flex; flex-direction: column; gap: 3px; }
+.phase .team { font-size: 12px; color: var(--ink-3); border-top: 1px dashed var(--line); padding-top: 8px; margin-top: auto; }
+
+/* Scores */
+.scores { display: flex; flex-direction: column; gap: 14px; }
+.score { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 44px; gap: 6px 14px; align-items: center; }
+.score .lbl { font-weight: 600; font-size: 14px; }
+.score .track { height: 10px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.score .fill { height: 100%; border-radius: 999px; }
+.score .fill.ok { background: var(--ok); } .score .fill.warn { background: var(--warn); } .score .fill.bad { background: var(--bad); }
+.score .val { font-family: var(--mono); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.score .why { grid-column: 1 / -1; font-size: 13px; color: var(--ink-2); max-width: 80ch; }
+@media (max-width: 560px) { .score { grid-template-columns: 1fr 44px; } .score .track { grid-column: 1 / -1; grid-row: 2; } }
+.total { display: flex; align-items: baseline; gap: 12px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; flex-wrap: wrap; }
+.total .big { font-family: var(--display); font-size: 36px; line-height: 1; }
+
+/* Hero */
+.hero { display: flex; flex-direction: column; gap: 14px; }
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.verdict > div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.verdict .k { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.verdict .v { font-size: 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+footer { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="prism" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 L22 20 H2 Z" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/><path d="M12 9 L16.5 17 H7.5 Z" fill="var(--accent-2)" opacity=".55"/></svg>
+    Query Prism
+  </div>
+  <span class="badge">Architecture Doc</span>
+  <span class="ver">v1.0 · as-built review · 27 Oct 2026</span>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle colour theme">Theme</button>
+</header>
+
+<div class="shell">
+  <aside class="side" aria-label="Sections">
+    <h4>Domains</h4>
+    <nav id="toc">
+      <a href="#d01"><span class="n">01</span>Requirements &amp; Domain<span class="dot warn"></span></a>
+      <a href="#d02"><span class="n">02</span>Styles &amp; Patterns<span class="dot bad"></span></a>
+      <a href="#d03"><span class="n">03</span>Component Design<span class="dot warn"></span></a>
+      <a href="#d04"><span class="n">04</span>Data Architecture<span class="dot bad"></span></a>
+      <a href="#d05"><span class="n">05</span>API Design<span class="dot ok"></span></a>
+      <a href="#d06"><span class="n">06</span>Security<span class="dot bad"></span></a>
+      <a href="#d07"><span class="n">07</span>Scalability<span class="dot warn"></span></a>
+      <a href="#d08"><span class="n">08</span>Reliability<span class="dot bad"></span></a>
+      <a href="#d09"><span class="n">09</span>DevOps &amp; CI/CD<span class="dot bad"></span></a>
+      <a href="#d10"><span class="n">10</span>Observability<span class="dot bad"></span></a>
+      <a href="#d11"><span class="n">11</span>Integrations<span class="dot warn"></span></a>
+      <a href="#d12"><span class="n">12</span>Evolution<span class="dot warn"></span></a>
+      <div class="sep"></div>
+      <a href="#adr"><span class="n">ADR</span>Decision Records<span></span></a>
+      <a href="#score"><span class="n">★</span>Business Score<span></span></a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="col">
+
+      <!-- ───────────── Overview ───────────── -->
+      <section class="hero" id="top">
+        <div class="eyebrow">Multi-tenant RAG knowledge assistant · Python / FastAPI · React 19</div>
+        <h1>Query Prism architecture, as built and as it should evolve</h1>
+        <p class="lede">Companies upload documents (PDF, Office, images, audio and video) into team-scoped topics. Query Prism chunks, embeds and graph-indexes them, then answers questions with cited sources using hybrid vector and knowledge-graph retrieval. This document reviews the code in this repository against the 12 GDE architecture domains. For each domain it records the current state, the gaps and the target design.</p>
+        <div class="verdict">
+          <div><span class="k">Current style</span><span class="v">5 FastAPI services + Celery worker sharing one Postgres schema, which makes it a <strong>distributed monolith</strong></span></div>
+          <div><span class="k">Recommended style</span><span class="v"><strong>Modular monolith</strong> with schema-per-context, plus a separately scaled ingestion worker</span></div>
+          <div><span class="k">Most urgent fixes</span><span class="v">Default secrets, DB ports exposed on host, Redis broker using LRU eviction, missing HNSW index</span></div>
+        </div>
+        <div class="legend">
+          <span><span class="dot ok"></span>Meets the framework</span>
+          <span><span class="dot warn"></span>Partial: works, but with structural gaps</span>
+          <span><span class="dot bad"></span>Gap: needs work before scaling or selling</span>
+        </div>
+        <div class="status-grid">
+          <a href="#d01"><span class="n">01</span><span class="t">Requirements &amp; Domain</span><span class="pill warn">Partial</span></a>
+          <a href="#d02"><span class="n">02</span><span class="t">Styles &amp; Patterns</span><span class="pill bad">Gap</span></a>
+          <a href="#d03"><span class="n">03</span><span class="t">Component Design</span><span class="pill warn">Partial</span></a>
+          <a href="#d04"><span class="n">04</span><span class="t">Data Architecture</span><span class="pill bad">Gap</span></a>
+          <a href="#d05"><span class="n">05</span><span class="t">API Design</span><span class="pill ok">Meets</span></a>
+          <a href="#d06"><span class="n">06</span><span class="t">Security</span><span class="pill bad">Gap</span></a>
+          <a href="#d07"><span class="n">07</span><span class="t">Scalability</span><span class="pill warn">Partial</span></a>
+          <a href="#d08"><span class="n">08</span><span class="t">Reliability</span><span class="pill bad">Gap</span></a>
+          <a href="#d09"><span class="n">09</span><span class="t">DevOps &amp; CI/CD</span><span class="pill bad">Gap</span></a>
+          <a href="#d10"><span class="n">10</span><span class="t">Observability</span><span class="pill bad">Gap</span></a>
+          <a href="#d11"><span class="n">11</span><span class="t">Integrations</span><span class="pill warn">Partial</span></a>
+          <a href="#d12"><span class="n">12</span><span class="t">Evolution</span><span class="pill warn">Partial</span></a>
+        </div>
+      </section>
+
+      <!-- ───────────── 01 ───────────── -->
+      <section id="d01">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 01</span>
+          <div class="row"><h2>Requirements &amp; Domain Analysis</h2><span class="pill warn">Partial</span></div>
+        </div>
+        <h3>Functional requirements</h3>
+        <ul class="tight">
+          <li><strong>Tenancy:</strong> register a company, invite users by email (24 h token), organise users into teams with owner / admin / member roles, and sign in with Google OAuth.</li>
+          <li><strong>Knowledge capture:</strong> upload PDF, DOCX, images (OCR), audio and video (Whisper transcription), CSV, TXT and MD into a team topic with <code>team</code> or <code>company</code> visibility, and track ingestion status.</li>
+          <li><strong>Question answering:</strong> ask questions scoped to all teams, one team or one topic; get a streamed answer (SSE) with cited source chunks; keep per-topic question history.</li>
+          <li><strong>Commercial:</strong> enforce per-plan quotas on queries, storage, teams and users; pick the LLM by plan; show a usage dashboard; take enterprise contact requests.</li>
+          <li><strong>Governance:</strong> keep an audit log of security-relevant events per company and team.</li>
+        </ul>
+        <h3>Non-functional requirements</h3>
+        <p>The repository states no NFRs. The targets below are proposed for a B2B SaaS at this stage and are referenced by the later sections.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>Attribute</th><th>Target</th><th>Today</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Time to first answer token</td><td class="num">p95 &lt; 2.5 s</td><td>Unmeasured. Embedding + parallel vector/graph + Cohere rerank all run before the LLM call.</td><td><span class="pill warn">Unknown</span></td></tr>
+            <tr><td>Vector search latency</td><td class="num">p95 &lt; 150 ms @ 1 M chunks</td><td>No HNSW index is created, so every query is a sequential scan over 3072-dim halfvecs.</td><td><span class="pill bad">At risk</span></td></tr>
+            <tr><td>Ingestion throughput</td><td class="num">100-page PDF &lt; 90 s</td><td>Worker concurrency 2; NER calls GPT-4o-mini per chunk.</td><td><span class="pill warn">Unknown</span></td></tr>
+            <tr><td>Availability</td><td class="num">99.5 % monthly</td><td>Single Docker host, no replicas, no failover.</td><td><span class="pill warn">Single host</span></td></tr>
+            <tr><td>Tenant isolation</td><td>Zero cross-tenant reads</td><td>Enforced in SQL <code>WHERE</code> clauses in each service; no row-level security.</td><td><span class="pill warn">By convention</span></td></tr>
+            <tr><td>Upload size</td><td class="num">≤ 500 MB</td><td><code>max_upload_size_mb = 500</code>, but the file is read fully into a 2 GB container before the check.</td><td><span class="pill warn">Partial</span></td></tr>
+            <tr><td>RPO / RTO</td><td class="num">24 h / 4 h</td><td>No backups defined for Postgres, Neo4j or the uploads volume.</td><td><span class="pill bad">None</span></td></tr>
+          </tbody>
+        </table></div>
+        <h3>Bounded contexts</h3>
+        <p>The services map well onto five contexts. The problem is ownership. In the target model below, each entity has exactly one owning context. Today several entities are written by two or three services.</p>
+        <div class="bc-grid">
+          <div class="bc" style="--c: var(--accent)">
+            <h3>Retrieval &amp; Answering <span class="kind">Core</span></h3>
+            <p>Hybrid search, reranking, prompt assembly and answer generation. This is where the product competes.</p>
+            <div class="ents"><span>Question</span><span>Answer</span><span>Citation</span><span>RetrievalScope</span><span>AnswerCache</span></div>
+            <span class="svc">Service today: chat</span>
+          </div>
+          <div class="bc" style="--c: var(--accent-2)">
+            <h3>Knowledge Ingestion <span class="kind">Core</span></h3>
+            <p>Turns raw files into chunks, embeddings and graph entities. Ingestion quality limits answer quality.</p>
+            <div class="ents"><span>Document</span><span>Chunk</span><span>Embedding</span><span>Entity</span><span>Relation</span></div>
+            <span class="svc">Service today: ingestion + worker</span>
+          </div>
+          <div class="bc" style="--c: var(--ok)">
+            <h3>Workspace <span class="kind">Supporting</span></h3>
+            <p>How knowledge is organised: topics inside teams. It currently has no owner; three services write <code>topics</code>.</p>
+            <div class="ents"><span>Topic</span><span>QuestionHistory</span></div>
+            <span class="svc">Service today: auth, chat, ingestion</span>
+          </div>
+          <div class="bc" style="--c: var(--warn)">
+            <h3>Identity &amp; Tenancy <span class="kind">Generic</span></h3>
+            <p>Companies, users, teams, membership, invites, credentials and the audit trail.</p>
+            <div class="ents"><span>Company</span><span>User</span><span>Team</span><span>Membership</span><span>Invite</span><span>AuditEvent</span></div>
+            <span class="svc">Service today: auth</span>
+          </div>
+          <div class="bc" style="--c: var(--bad)">
+            <h3>Plans &amp; Metering <span class="kind">Supporting</span></h3>
+            <p>Plan catalogue, quota checks, usage counters and model entitlement.</p>
+            <div class="ents"><span>Plan</span><span>Subscription</span><span>UsageCounter</span><span>Entitlement</span></div>
+            <span class="svc">Service today: billing</span>
+          </div>
+          <div class="bc" style="--c: var(--muted)">
+            <h3>Notification <span class="kind">Generic</span></h3>
+            <p>Transactional email over the Postfix relay. Stateless and well isolated today.</p>
+            <div class="ents"><span>EmailMessage</span><span>Template</span></div>
+            <span class="svc">Service today: notification</span>
+          </div>
+        </div>
+        <div class="callout warn"><b>Finding</b><p>Usage counters (<code>queries_used_this_month</code>, <code>storage_used_bytes</code>) are columns on <code>companies</code>, which Identity owns. Metering therefore writes into another context's aggregate. Move them to a <code>billing.usage_counters</code> table keyed by <code>company_id</code>.</p></div>
+      </section>
+
+      <!-- ───────────── 02 ───────────── -->
+      <section id="d02">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 02</span>
+          <div class="row"><h2>Architecture Styles &amp; Patterns</h2><span class="pill bad">Gap</span></div>
+        </div>
+        <p>The system is deployed as microservices, but the services share one database schema, duplicate each other's code and call each other synchronously on the hot path. That gives it the operational cost of microservices without independent deployability or failure isolation.</p>
+        <div class="compare">
+          <div>
+            <h3>As built</h3>
+            <ul class="tight">
+              <li>5 services, each with router → function module → raw SQL</li>
+              <li>Every service except notification reads and writes tables owned by others</li>
+              <li><code>topics.py</code> and <code>cache.py</code> are byte-identical in chat and ingestion; <code>auth.py</code> is identical in 4 services, <code>audit.py</code> in 3</li>
+              <li>Sync HTTP to billing on every chat request (check → LLM → increment)</li>
+              <li>Async only for ingestion (Celery on Redis)</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Target</h3>
+            <ul class="tight">
+              <li><strong>Modular monolith</strong> (one FastAPI app) with one package per bounded context</li>
+              <li><strong>Hexagonal</strong> inside each module: domain → application services → ports; adapters for Postgres, Neo4j, LLMs</li>
+              <li>Schema-per-context in Postgres; cross-context reads only through a module's public interface</li>
+              <li>Domain events (<code>DocumentIngested</code>, <code>QuestionAnswered</code>) via an outbox</li>
+              <li>Ingestion worker stays a separate deployable, because its CPU and memory profile differs</li>
+            </ul>
+          </div>
+        </div>
+        <div class="code-cap">Target system diagram</div>
+<pre><code>                 Browser (React 19 · TanStack Query · SSE)
+                                 │ HTTPS
+                     ┌───────────▼───────────┐
+                     │  Nginx edge (TLS, RL) │
+                     └───────────┬───────────┘
+                                 │
+   ┌─────────────────────────────▼──────────────────────────────┐
+   │                 query-prism-api  (FastAPI)                  │
+   │  ┌───────────┐ ┌────────────┐ ┌───────────┐ ┌────────────┐ │
+   │  │ identity  │ │ workspace  │ │ retrieval │ │  metering  │ │
+   │  │ (generic) │ │ (support)  │ │  (CORE)   │ │ (support)  │ │
+   │  └─────┬─────┘ └─────┬──────┘ └─────┬─────┘ └─────┬──────┘ │
+   │        └── in-process ports ────────┴─────────────┘        │
+   │                 │ outbox table → event relay                │
+   └─────────────────┼──────────────────────────────────────────┘
+                     │ Redis Streams (noeviction)
+         ┌───────────▼────────────┐        ┌──────────────────┐
+         │ ingestion-worker (xN)  │        │ notification     │
+         │ load→chunk→embed→NER   │        │ (email consumer) │
+         └───┬───────────────┬────┘        └────────┬─────────┘
+             │               │                      │ SMTP
+   ┌─────────▼───┐   ┌───────▼──────┐   ┌───────────▼───┐
+   │ Postgres 18 │   │   Neo4j 5    │   │ Postfix relay │
+   │ + pgvector  │   │ (graph index)│   └───────────────┘
+   │ schema/ctx  │   └──────────────┘
+   └─────────────┘   Redis: answer cache (separate DB, LRU)
+        ▲
+        └── LLM gateway port → Anthropic · OpenAI · Cohere</code></pre>
+        <div class="callout ok"><b>Deferred</b><p>Full CQRS, a dedicated message broker (RabbitMQ or Kafka) and splitting retrieval into its own service are deferred to Phase 3. They become worth it only when retrieval needs GPU or replica scaling that is independent of the CRUD API.</p></div>
+      </section>
+
+      <!-- ───────────── 03 ───────────── -->
+      <section id="d03">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 03</span>
+          <div class="row"><h2>Component Design</h2><span class="pill warn">Partial</span></div>
+        </div>
+        <div class="tbl"><table>
+          <thead><tr><th>Component</th><th>Responsibility</th><th>Technology</th><th>Deployment unit</th><th>SRP</th></tr></thead>
+          <tbody>
+            <tr><td><strong>auth</strong> :8001</td><td>Register, login, JWT, Google OAuth, teams, invites, password reset, audit read API</td><td>FastAPI, python-jose, passlib/bcrypt</td><td><code>svc_auth</code> 512 MB</td><td><span class="pill warn">Also writes topics</span></td></tr>
+            <tr><td><strong>ingestion</strong> :8002</td><td>Upload validation, document CRUD, enqueue jobs, cache invalidation</td><td>FastAPI, Celery producer</td><td><code>svc_ingestion</code> 2 GB</td><td><span class="pill warn">Also topics + cache</span></td></tr>
+            <tr><td><strong>worker</strong></td><td>Load → chunk (LlamaIndex, 512 tok) → embed (OpenAI, batch 100) → NER/relations → Postgres + Neo4j</td><td>Celery 5.4, pdfplumber, tesseract, faster-whisper, spaCy</td><td><code>svc_worker</code> 4 GB, concurrency 2</td><td><span class="pill ok">Focused</span></td></tr>
+            <tr><td><strong>chat</strong> :8003</td><td>Hybrid retrieval, Cohere rerank, LLM answer and stream, topics CRUD, history</td><td>FastAPI, asyncpg, neo4j driver, anthropic, openai</td><td><code>svc_chat</code> 1 GB</td><td><span class="pill warn">Owns topics too</span></td></tr>
+            <tr><td><strong>billing</strong> :8004</td><td>Plan limits, quota checks, usage counters, model entitlement</td><td>FastAPI, asyncpg</td><td><code>svc_billing</code> 512 MB</td><td><span class="pill warn">Bypassed by chat</span></td></tr>
+            <tr><td><strong>notification</strong> :8005</td><td>Invite, reset and contact email</td><td>FastAPI, smtplib → Postfix</td><td><code>svc_notification</code> 256 MB</td><td><span class="pill ok">Focused</span></td></tr>
+            <tr><td><strong>frontend</strong></td><td>SPA: topics, documents, chat, company and user settings</td><td>React 19, Vite, Tailwind, Flowbite, TanStack Query/Form/Table</td><td>Nginx static, 512 MB</td><td><span class="pill ok">Clean</span></td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout bad"><b>Diverged duplicate</b><p><code>ingestion/app/services/graph/ner.py</code> extracts entities with GPT-4o-mini, while <code>chat/app/services/graph/ner.py</code> uses spaCy <code>en_core_web_sm</code>. The graph is indexed with one entity vocabulary and queried with another, so graph retrieval silently misses on names spaCy segments differently, and on any non-English text. This is a concrete cost of copy-pasting instead of sharing a kernel.</p></div>
+        <h3>Target domain model</h3>
+        <p>Today every function passes <code>dict</code>s straight from asyncpg to the router. Invariants such as "a document belongs to exactly one team in the same company as its topic" live in SQL or nowhere. The sketch below shows the core aggregates with their invariants made explicit.</p>
+        <div class="code-cap">retrieval/domain/model.py · knowledge/domain/model.py</div>
+<pre><code><span class="kw">from</span> dataclasses <span class="kw">import</span> dataclass, field
+<span class="kw">from</span> enum <span class="kw">import</span> StrEnum
+<span class="kw">from</span> uuid <span class="kw">import</span> UUID
+
+<span class="kw">class</span> <span class="fn">Visibility</span>(StrEnum):
+    TEAM = <span class="st">"team"</span>
+    COMPANY = <span class="st">"company"</span>
+
+<span class="kw">class</span> <span class="fn">DocStatus</span>(StrEnum):
+    PENDING = <span class="st">"pending"</span>; PROCESSING = <span class="st">"processing"</span>
+    COMPLETED = <span class="st">"completed"</span>; FAILED = <span class="st">"failed"</span>
+
+<span class="cm"># Value object: who may see what. Replaces _build_access_filter(dict).</span>
+@dataclass(frozen=<span class="kw">True</span>)
+<span class="kw">class</span> <span class="fn">RetrievalScope</span>:
+    company_id: UUID
+    team_ids: frozenset[UUID]
+    is_admin: bool
+    topic_id: UUID | <span class="kw">None</span> = <span class="kw">None</span>
+
+    <span class="kw">def</span> <span class="fn">narrow_to_team</span>(self, team_id: UUID) -> <span class="st">"RetrievalScope"</span>:
+        <span class="kw">if not</span> self.is_admin <span class="kw">and</span> team_id <span class="kw">not in</span> self.team_ids:
+            <span class="kw">raise</span> ScopeViolation(team_id)
+        <span class="kw">return</span> RetrievalScope(self.company_id, frozenset({team_id}), self.is_admin, self.topic_id)
+
+<span class="cm"># Aggregate root: Document owns its chunks; status transitions are guarded.</span>
+@dataclass
+<span class="kw">class</span> <span class="fn">Document</span>:
+    id: UUID
+    company_id: UUID
+    team_id: UUID
+    topic_id: UUID | <span class="kw">None</span>
+    visibility: Visibility
+    size_bytes: int
+    status: DocStatus = DocStatus.PENDING
+    events: list = field(default_factory=list)
+
+    <span class="kw">def</span> <span class="fn">complete</span>(self, chunk_count: int) -> <span class="kw">None</span>:
+        <span class="kw">if</span> self.status <span class="kw">is not</span> DocStatus.PROCESSING:
+            <span class="kw">raise</span> InvalidTransition(self.status, DocStatus.COMPLETED)
+        self.status = DocStatus.COMPLETED
+        self.events.append(DocumentIngested(self.id, self.team_id, chunk_count))
+
+<span class="cm"># Port: retrieval depends on this, not on asyncpg or the neo4j driver.</span>
+<span class="kw">class</span> <span class="fn">CandidateSource</span>(Protocol):
+    <span class="kw">async def</span> <span class="fn">candidates</span>(self, q: <span class="st">"Question"</span>, scope: RetrievalScope, k: int) -> list[<span class="st">"Candidate"</span>]: ...</code></pre>
+      </section>
+
+      <!-- ───────────── 04 ───────────── -->
+      <section id="d04">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 04</span>
+          <div class="row"><h2>Data Architecture</h2><span class="pill bad">Gap</span></div>
+        </div>
+        <div class="tbl"><table>
+          <thead><tr><th>Store</th><th>Used for</th><th>Justification</th><th>Assessment</th></tr></thead>
+          <tbody>
+            <tr><td><strong>PostgreSQL 18 + pgvector</strong></td><td>All relational data; chunk embeddings as <code>vector(3072)</code> and <code>halfvec(3072)</code></td><td>One transactional store for metadata and vectors keeps tenant filters and ANN in the same query.</td><td><span class="pill ok">Right choice</span></td></tr>
+            <tr><td><strong>Neo4j 5 Community + APOC</strong></td><td>Entity and relation graph linked to chunk IDs; 2-hop traversal</td><td>Multi-hop entity expansion is awkward in SQL; a graph engine makes it a short Cypher query.</td><td><span class="pill warn">Unproven value</span></td></tr>
+            <tr><td><strong>Redis 7</strong></td><td>Celery broker <em>and</em> answer cache in DB 0</td><td>One small component for two jobs.</td><td><span class="pill bad">Conflicting policies</span></td></tr>
+            <tr><td><strong>Docker volume</strong> <code>uploads</code></td><td>Original files</td><td>Simple, but tied to one host.</td><td><span class="pill warn">Not durable</span></td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout bad"><b>Critical: broker on an evicting cache</b><p>Redis runs with <code>--maxmemory 512mb --maxmemory-policy allkeys-lru</code> and serves as both the Celery broker and the answer cache. Under memory pressure Redis may evict queued ingestion tasks, and documents then sit in <code>pending</code> forever. Use a separate Redis instance or DB with <code>noeviction</code> for the broker, and keep LRU for the cache only.</p></div>
+        <div class="callout bad"><b>Critical: no ANN index</b><p><code>init.sql</code> only has the HNSW index as a comment ("build manually after bulk ingestion"), and no migration creates it. The retriever orders by <code>embedding_hv &lt;=&gt; $1::halfvec</code>, so every query scans all chunks across all tenants. Each chunk also stores the embedding twice (fp32 ≈ 12 KB and fp16 ≈ 6 KB). Drop the fp32 column once the halfvec index exists.</p></div>
+        <h3>Key schema decisions (target)</h3>
+        <div class="code-cap">migrations/005_contexts_and_index.sql</div>
+<pre><code><span class="cm">-- One schema per bounded context; each service role gets USAGE on its own schema only.</span>
+<span class="kw">CREATE SCHEMA</span> identity;  <span class="kw">CREATE SCHEMA</span> knowledge;
+<span class="kw">CREATE SCHEMA</span> workspace; <span class="kw">CREATE SCHEMA</span> metering;
+
+<span class="kw">ALTER TABLE</span> public.chunks <span class="kw">SET SCHEMA</span> knowledge;
+<span class="kw">ALTER TABLE</span> knowledge.chunks <span class="kw">ADD COLUMN</span> company_id uuid;  <span class="cm">-- denormalised for RLS + filtered ANN</span>
+
+<span class="kw">CREATE INDEX CONCURRENTLY</span> chunks_hv_hnsw
+  <span class="kw">ON</span> knowledge.chunks <span class="kw">USING</span> hnsw (embedding_hv halfvec_cosine_ops)
+  <span class="kw">WITH</span> (m = 16, ef_construction = 64);
+
+<span class="cm">-- Tenant isolation enforced by the database, not by each WHERE clause.</span>
+<span class="kw">ALTER TABLE</span> knowledge.chunks <span class="kw">ENABLE ROW LEVEL SECURITY</span>;
+<span class="kw">CREATE POLICY</span> tenant_isolation <span class="kw">ON</span> knowledge.chunks
+  <span class="kw">USING</span> (company_id = current_setting(<span class="st">'app.company_id'</span>)::uuid);
+
+<span class="cm">-- Usage moves out of identity.companies.</span>
+<span class="kw">CREATE TABLE</span> metering.usage_counters (
+  company_id  uuid <span class="kw">PRIMARY KEY</span>,
+  period      date <span class="kw">NOT NULL</span>,
+  queries     int  <span class="kw">NOT NULL DEFAULT</span> 0,
+  storage_b   bigint <span class="kw">NOT NULL DEFAULT</span> 0
+);
+
+<span class="cm">-- Retention: audit_log partitioned by month, 13 months kept.</span></code></pre>
+        <h3>Caching</h3>
+        <div class="tbl"><table>
+          <thead><tr><th>What</th><th>Key</th><th>TTL</th><th>Invalidation</th><th>Issue</th></tr></thead>
+          <tbody>
+            <tr><td>Final answer + sources</td><td class="mono">rag:answer:sha256(company + sorted team_ids + query)</td><td class="num">1 h</td><td><code>invalidate_team_cache</code> on upload and delete</td><td>Invalidation runs at <em>upload</em>, before ingestion completes. Answers cached during processing stay stale for up to an hour. Invalidate on <code>DocumentIngested</code> instead.</td></tr>
+            <tr><td>Query embedding (proposed)</td><td class="mono">emb:sha256(model + text)</td><td class="num">7 d</td><td>None needed (deterministic)</td><td>Saves one OpenAI call per repeated question, even when the answer cache misses.</td></tr>
+            <tr><td>Plan entitlement (proposed)</td><td class="mono">plan:{company_id}</td><td class="num">5 min</td><td>On plan change event</td><td>Removes a billing round-trip from every chat request.</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Data flow</h3>
+        <p><strong>Ingest:</strong> API stores the file on the volume and inserts <code>documents</code> (pending) → Celery task → worker extracts text → chunks → embeds in batches of 100 → inserts <code>chunks</code> → NER and relations → MERGE into Neo4j → status <code>completed</code>. <strong>Query:</strong> billing check → cache → embed query → pgvector top 20 ∥ Neo4j 2-hop top 20 → Cohere rerank to 8 → token-bounded context → LLM → history and counter → cache. Postgres and Neo4j writes are not coordinated. A worker crash between them leaves chunks without graph entities, and nothing reconciles them.</p>
+      </section>
+
+      <!-- ───────────── 05 ───────────── -->
+      <section id="d05">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 05</span>
+          <div class="row"><h2>API Design</h2><span class="pill ok">Meets</span></div>
+        </div>
+        <p><strong>REST + Server-Sent Events.</strong> REST fits the CRUD-shaped resources (topics, documents, teams). SSE is the right choice for one-way token streaming: it works through Nginx with <code>proxy_buffering off</code>, reconnects natively and needs no WebSocket upgrade path. GraphQL would add little because the screens map almost one-to-one onto resources.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>Method</th><th>Path</th><th>Service</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="m-post">POST</td><td class="mono">/auth/register</td><td>auth</td><td>Create company + owner, return JWT</td></tr>
+            <tr><td class="m-post">POST</td><td class="mono">/auth/login</td><td>auth</td><td>Email + password → JWT (HS256, 7 d)</td></tr>
+            <tr><td class="m-get">GET</td><td class="mono">/auth/oauth/google</td><td>auth</td><td>Start Google OAuth; callback issues JWT or pending token</td></tr>
+            <tr><td class="m-post">POST</td><td class="mono">/auth/invite</td><td>auth</td><td>Admin invites email to a team (checks user quota)</td></tr>
+            <tr><td class="m-post">POST</td><td class="mono">/auth/invite/{token}/accept</td><td>auth</td><td>Create user from invite</td></tr>
+            <tr><td class="m-post">POST</td><td class="mono">/auth/teams/{team_id}/members</td><td>auth</td><td>Add member to team</td></tr>
+            <tr><td class="m-post">POST</td><td class="mono">/ingest</td><td>ingestion</td><td>Multipart upload → 202-style job; 20/min</td></tr>
+            <tr><td class="m-get">GET</td><td class="mono">/ingest/{document_id}</td><td>ingestion</td><td>Ingestion status</td></tr>
+            <tr><td class="m-del">DELETE</td><td class="mono">/ingest/{document_id}</td><td>ingestion</td><td>Delete document, chunks; decrement storage</td></tr>
+            <tr><td class="m-post">POST</td><td class="mono">/chat</td><td>chat</td><td>Blocking answer with sources; 30/min</td></tr>
+            <tr><td class="m-get">GET</td><td class="mono">/chat/stream</td><td>chat</td><td>SSE token stream, then sources event</td></tr>
+            <tr><td class="m-get">GET</td><td class="mono">/topics/{id}/questions</td><td>chat</td><td>Question history for a topic</td></tr>
+            <tr><td class="m-patch">PATCH</td><td class="mono">/topics/{id}</td><td>chat</td><td>Rename or redescribe topic</td></tr>
+            <tr><td class="m-get">GET</td><td class="mono">/usage</td><td>billing</td><td>Plan, limits and consumption for dashboard</td></tr>
+            <tr><td class="m-get">GET</td><td class="mono">/audit</td><td>auth</td><td>Paginated audit log (admin)</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout warn"><b>Improve</b><p>Three changes: version the public API (<code>/api/v1</code>) before external customers integrate; return <code>202 Accepted</code> with a <code>Location</code> header from <code>POST /ingest</code>; and move <code>GET /chat/stream</code> to <code>POST</code>, because putting the question in the query string sends it into Nginx access logs.</p></div>
+      </section>
+
+      <!-- ───────────── 06 ───────────── -->
+      <section id="d06">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 06</span>
+          <div class="row"><h2>Security Architecture</h2><span class="pill bad">Gap</span></div>
+        </div>
+        <p>The application-level design is sound: bcrypt passwords, hashed single-use reset tokens, RBAC with owner / admin / member, and tenant filters on every retrieval query. The deployment undermines it.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>Severity</th><th>Finding</th><th>Where</th><th>Fix</th></tr></thead>
+          <tbody>
+            <tr><td><span class="pill bad">Critical</span></td><td>JWT signing key defaults to <code>"changeme"</code>. If <code>.env</code> omits it, anyone can mint tokens for any company.</td><td class="mono">services/*/app/config.py</td><td>No default. Fail startup when unset or shorter than 32 bytes.</td></tr>
+            <tr><td><span class="pill bad">Critical</span></td><td>Postgres <code>5434</code>, Neo4j <code>7474/7687</code> and Redis <code>6380</code> are published on the host. Neo4j defaults to <code>ragpassword</code>; Redis has no password.</td><td class="mono">docker-compose.yml</td><td>Remove <code>ports:</code> in production; use an override file for dev. Set <code>requirepass</code>.</td></tr>
+            <tr><td><span class="pill bad">High</span></td><td><code>/internal/*</code> billing endpoints have no caller authentication. Any container on <code>rag_net</code> can reset counters.</td><td class="mono">billing/app/routers/internal.py</td><td>Shared service token or mTLS; disappears in the modular monolith.</td></tr>
+            <tr><td><span class="pill warn">High</span></td><td>JWT carries <code>team_ids</code> and <code>role</code> for 7 days. Removing a member does not revoke their access until the token expires.</td><td class="mono">auth/app/services/auth.py</td><td>15-min access token + rotating refresh token; or a membership version check.</td></tr>
+            <tr><td><span class="pill warn">Medium</span></td><td>Rate limit keys on remote IP. Behind the gateway, all users probably share the gateway's IP, so one user can exhaust 30/min for everyone. Limits are also in-memory per process.</td><td class="mono">chat/app/services/rate_limit.py</td><td>Key on <code>user_id</code>; Redis storage; trust <code>X-Forwarded-For</code> from the gateway only.</td></tr>
+            <tr><td><span class="pill warn">Medium</span></td><td>Postfix <code>ALLOWED_SENDER_DOMAINS: "*"</code>, with <code>MYNETWORKS</code> covering all private ranges.</td><td class="mono">docker-compose.yml</td><td>Restrict to the product domain and the Docker subnet.</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Sensitive data and compliance</h3>
+        <ul class="tight">
+          <li><strong>Customer documents are the crown jewels.</strong> They may contain PII, contracts or health data. Chunks are sent to OpenAI (embeddings and NER), Cohere (rerank) and Anthropic or OpenAI (answers). Each is a GDPR sub-processor and needs a DPA and a listing in the privacy page.</li>
+          <li><strong>At rest:</strong> no encryption is configured for the Postgres or Neo4j volumes or for <code>uploads</code>. Use encrypted host disks at minimum. Enterprise buyers will ask for per-tenant keys.</li>
+          <li><strong>Right to erasure:</strong> deleting a document removes chunks from Postgres. Verify that Neo4j entity nodes linked only to that document are also removed, and that cached answers containing its text are purged.</li>
+          <li><strong>Prompt injection:</strong> uploaded documents are inserted into the LLM context verbatim. Keep the system prompt's instruction to answer only from sources, and never give the answering model tools or credentials.</li>
+        </ul>
+      </section>
+
+      <!-- ───────────── 07 ───────────── -->
+      <section id="d07">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 07</span>
+          <div class="row"><h2>Scalability Strategy</h2><span class="pill warn">Partial</span></div>
+        </div>
+        <p><strong>Target load for Phase 2:</strong> 200 companies, 2,000 monthly active users, 50 concurrent chat sessions, about 5 chat requests per second at peak, 2 M chunks (~25 GB of halfvec data plus index) and about 3,000 documents ingested per day.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>Bottleneck</th><th>Why it bites</th><th>Free / cheap fix</th><th>Paid scale-up path</th></tr></thead>
+          <tbody>
+            <tr><td>Vector search</td><td>Sequential scan over 3072-dim vectors; cost grows linearly with all tenants' data</td><td>HNSW on halfvec; denormalise <code>company_id</code> onto chunks for filtered search</td><td>Read replica for retrieval; or reduce to 1024 dims (<code>dimensions</code> param) to shrink the index 3×</td></tr>
+            <tr><td>Ingestion worker</td><td>Concurrency 2; Whisper and OCR are CPU-heavy; one long video blocks a slot</td><td>Separate Celery queues: <code>fast</code> (text/PDF) and <code>heavy</code> (audio/video/OCR)</td><td>Autoscaled worker pool; GPU node for Whisper</td></tr>
+            <tr><td>LLM latency and cost</td><td>Answer generation dominates wall time and spend</td><td>Answer + embedding cache; plan-based model routing (already present)</td><td>Anthropic prompt caching for the system prompt; batch API for NER</td></tr>
+            <tr><td>Billing round-trips</td><td>3 HTTP calls per chat request on the hot path</td><td>Cache entitlement in Redis; single atomic <code>reserve</code> call</td><td>In-process module call (modular monolith)</td></tr>
+            <tr><td>Neo4j Community</td><td>No clustering; single instance</td><td>Keep graph optional per query; degrade to vector-only</td><td>Neo4j AuraDB, or replace with Postgres recursive CTEs if eval shows small gain</td></tr>
+            <tr><td>Upload handling</td><td>File read fully into memory (<code>len(content)</code>) in a 2 GB container; four concurrent 500 MB uploads exhaust it</td><td>Stream to disk in chunks; reject early on <code>Content-Length</code></td><td>Pre-signed direct upload to S3-compatible object storage</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Horizontal vs vertical:</strong> the API is stateless apart from the in-memory rate limiter, so it scales horizontally once that limiter moves to Redis. Workers scale horizontally by queue. Postgres scales vertically first (it already has 8 GB), then with read replicas for retrieval. Neo4j scales vertically only on the Community edition.</p>
+      </section>
+
+      <!-- ───────────── 08 ───────────── -->
+      <section id="d08">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 08</span>
+          <div class="row"><h2>Reliability &amp; Resilience</h2><span class="pill bad">Gap</span></div>
+        </div>
+        <div class="tbl"><table>
+          <thead><tr><th>Failure mode</th><th>Current behaviour</th><th>Target behaviour</th></tr></thead>
+          <tbody>
+            <tr><td>Billing service down</td><td><code>check_query_limit</code> returns 502, so chat is down. <code>increment_query_count</code> ignores errors, so queries go unbilled.</td><td>Fail open with a short-lived cached entitlement; queue increments via outbox</td></tr>
+            <tr><td>Concurrent queries at quota edge</td><td>Check and increment are separate calls with the LLM in between, so N parallel requests can all pass the check</td><td>Atomic reserve: <code>UPDATE … SET q = q + 1 WHERE q &lt; max RETURNING</code>; refund on failure</td></tr>
+            <tr><td>Cohere unavailable</td><td>Logged warning; falls back to similarity ordering</td><td><span class="pill ok">Already good</span> Keep it, and add a metric</td></tr>
+            <tr><td>Anthropic / OpenAI error</td><td>Exception propagates; no retry; stream ends mid-answer</td><td>Retry with jitter on 429/529; fail over to the other provider for the same tier; SSE <code>error</code> event</td></tr>
+            <tr><td>Worker crash mid-document</td><td><code>acks_late</code> + retry (30 s delay) re-runs the task; chunk inserts are not idempotent, so duplicates are possible</td><td>Delete-then-insert chunks per document in one transaction; idempotent Neo4j <code>MERGE</code> (already used)</td></tr>
+            <tr><td>Redis evicts broker keys</td><td>Task lost; document stuck in <code>pending</code></td><td><code>noeviction</code> broker; sweeper re-enqueues documents pending &gt; 15 min</td></tr>
+            <tr><td>Host disk loss</td><td>Everything lost: DBs, uploads, certificates</td><td>Nightly <code>pg_dump</code> + WAL archiving to object storage; <code>neo4j-admin database dump</code>; uploads in object storage</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Consistency:</strong> strong consistency inside Postgres for identity, workspace and metering. Eventual consistency between Postgres chunks, the Neo4j graph and the answer cache, made explicit by driving them all from <code>DocumentIngested</code>. A nightly reconciliation job compares chunk IDs in Postgres with <code>Chunk</code> nodes in Neo4j. Because Neo4j is a derived index, it can always be rebuilt from Postgres.</p>
+        <div class="code-cap">metering/application/reserve.py: atomic quota reservation</div>
+<pre><code><span class="kw">async def</span> <span class="fn">reserve_query</span>(conn, company_id: UUID) -> Reservation:
+    row = <span class="kw">await</span> conn.fetchrow(<span class="st">"""
+        UPDATE metering.usage_counters u
+           SET queries = CASE WHEN u.period &lt; date_trunc('month', now()) THEN 1
+                              ELSE u.queries + 1 END,
+               period  = date_trunc('month', now())
+          FROM metering.plans p
+         WHERE u.company_id = $1 AND p.plan = u.plan
+           AND (p.max_queries IS NULL
+                OR u.period &lt; date_trunc('month', now())
+                OR u.queries &lt; p.max_queries)
+     RETURNING u.queries, p.max_queries, p.llm_model"""</span>, company_id)
+    <span class="kw">if</span> row <span class="kw">is None</span>:
+        <span class="kw">raise</span> QuotaExceeded(company_id)          <span class="cm"># mapped to HTTP 429 at the edge only</span>
+    <span class="kw">return</span> Reservation(company_id, model=row[<span class="st">"llm_model"</span>])</code></pre>
+      </section>
+
+      <!-- ───────────── 09 ───────────── -->
+      <section id="d09">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 09</span>
+          <div class="row"><h2>DevOps &amp; CI/CD</h2><span class="pill bad">Gap</span></div>
+        </div>
+        <div class="compare">
+          <div>
+            <h3>As built</h3>
+            <ul class="tight">
+              <li>One <code>docker-compose.yml</code> with profiles <code>http</code> / <code>ssl</code>; Certbot renew loop every 12 h</li>
+              <li>No CI pipeline in the repository</li>
+              <li>Backend has zero automated tests; frontend has 13 Vitest files</li>
+              <li>Migrations are hand-applied SQL files; <code>init.sql</code> duplicates them</li>
+              <li><code>boky/postfix:latest</code> and <code>neo4j:5-community</code> are floating tags</li>
+              <li>Root <code>Dockerfile</code> runs <code>uvicorn --reload</code> (dev server)</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Target</h3>
+            <ul class="tight">
+              <li>GitHub Actions: lint (ruff, eslint) → type check (mypy, tsc) → test (pytest with Postgres service container, vitest) → build images → push to GHCR</li>
+              <li>Alembic or sqitch migrations, run as a one-shot job before deploy</li>
+              <li><code>compose.yml</code> + <code>compose.dev.yml</code> (ports, reload, Flower) + <code>compose.prod.yml</code></li>
+              <li>Pinned image digests; Renovate for updates</li>
+              <li>Staging on a second small VM with anonymised seed data</li>
+              <li>Rolling deploy: start new API container, health-check, switch Nginx upstream</li>
+            </ul>
+          </div>
+        </div>
+        <div class="code-cap">.github/workflows/ci.yml (excerpt)</div>
+<pre><code><span class="kw">jobs:</span>
+  <span class="fn">backend</span>:
+    <span class="kw">runs-on:</span> ubuntu-24.04
+    <span class="kw">services:</span>
+      postgres:
+        <span class="kw">image:</span> pgvector/pgvector:pg18-trixie
+        <span class="kw">env:</span> { POSTGRES_PASSWORD: test }
+        <span class="kw">ports:</span> [<span class="st">"5432:5432"</span>]
+    <span class="kw">steps:</span>
+      - <span class="kw">uses:</span> actions/checkout@v4
+      - <span class="kw">uses:</span> astral-sh/setup-uv@v5
+      - <span class="kw">run:</span> uv sync --frozen
+      - <span class="kw">run:</span> uv run ruff check . <span class="cm"># also bans cross-context imports via import-linter</span>
+      - <span class="kw">run:</span> uv run lint-imports
+      - <span class="kw">run:</span> uv run pytest -q --cov=src --cov-fail-under=60
+  <span class="fn">retrieval-eval</span>:
+    <span class="kw">needs:</span> backend
+    <span class="kw">steps:</span>
+      - <span class="kw">run:</span> uv run python -m evals.retrieval --min-recall-at-8 0.80</code></pre>
+      </section>
+
+      <!-- ───────────── 10 ───────────── -->
+      <section id="d10">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 10</span>
+          <div class="row"><h2>Observability &amp; Monitoring</h2><span class="pill bad">Gap</span></div>
+        </div>
+        <p>Today there is <code>logging.basicConfig</code> in each service and Flower for Celery. There are no metrics, no correlation ID across the five services, and no alerting. LLM spend is invisible until the provider invoice arrives.</p>
+        <h3>Metrics specific to Query Prism</h3>
+        <div class="tbl"><table>
+          <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">qp_answer_ttft_seconds</td><td>histogram</td><td>model, cached</td><td>Time to first token is the latency users notice</td></tr>
+            <tr><td class="mono">qp_retrieval_candidates</td><td>histogram</td><td>source=vector|graph</td><td>Shows whether the graph contributes at all</td></tr>
+            <tr><td class="mono">qp_rerank_fallback_total</td><td>counter</td><td>reason</td><td>Silent Cohere fallback degrades quality</td></tr>
+            <tr><td class="mono">qp_llm_tokens_total</td><td>counter</td><td>model, direction, plan</td><td>Cost per plan; margin on the $29 tier</td></tr>
+            <tr><td class="mono">qp_answer_cache_hit_ratio</td><td>gauge</td><td>—</td><td>Validates the 1 h TTL</td></tr>
+            <tr><td class="mono">qp_ingest_duration_seconds</td><td>histogram</td><td>source_type, stage</td><td>Finds the slow stage (OCR, Whisper, NER)</td></tr>
+            <tr><td class="mono">qp_documents_by_status</td><td>gauge</td><td>status</td><td>Stuck <code>pending</code> / <code>processing</code> documents</td></tr>
+            <tr><td class="mono">qp_no_context_answers_total</td><td>counter</td><td>scope</td><td>"No documents found" rate signals retrieval misses</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Logging and tracing</h3>
+        <p>Use structured JSON logs (<code>structlog</code>) carrying <code>request_id</code>, <code>company_id</code>, <code>user_id</code> and <code>document_id</code>. Never log query text or chunk content at INFO, because they are customer data. Use OpenTelemetry tracing from Nginx through the API, Celery, Postgres, Neo4j and LLM calls. It is essential while the system stays distributed, and still valuable in a modular monolith because of the worker hop.</p>
+        <h3>Critical alerts</h3>
+        <ul class="tight">
+          <li>Documents in <code>pending</code> for more than 15 minutes (broker loss or a dead worker)</li>
+          <li>LLM error rate above 5 % over 5 minutes, per provider</li>
+          <li>p95 time to first token above 4 s over 15 minutes</li>
+          <li>Daily LLM token spend above 150 % of the 7-day average</li>
+          <li>Postgres disk above 80 % or certificate expiry within 14 days</li>
+        </ul>
+        <div class="pills"><span class="pill info">Free</span><span class="pill plain">Prometheus + Grafana</span><span class="pill plain">Loki</span><span class="pill plain">Tempo / Jaeger</span><span class="pill plain">Grafana Cloud free tier (10k series)</span></div>
+      </section>
+
+      <!-- ───────────── 11 ───────────── -->
+      <section id="d11">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 11</span>
+          <div class="row"><h2>Integration Architecture</h2><span class="pill warn">Partial</span></div>
+        </div>
+        <div class="tbl"><table>
+          <thead><tr><th>Integration</th><th>Type</th><th>Provides</th><th>Limits / cost</th><th>Fallback today</th></tr></thead>
+          <tbody>
+            <tr><td><strong>OpenAI Embeddings</strong></td><td>REST, batch 100</td><td><code>text-embedding-3-large</code>, 3072 dims</td><td>Per-token; tier-based TPM limits</td><td><span class="pill bad">None</span> Ingest and every query fail</td></tr>
+            <tr><td><strong>OpenAI Chat</strong></td><td>REST + stream</td><td>GPT-4o-mini answers (free/starter); NER in ingestion</td><td>Per-token</td><td><span class="pill bad">None</span></td></tr>
+            <tr><td><strong>Anthropic Messages</strong></td><td>REST + stream</td><td>Claude Haiku 4.5 (team), Sonnet 4.6 (business, enterprise)</td><td>Per-token; RPM by tier</td><td><span class="pill bad">None</span></td></tr>
+            <tr><td><strong>Cohere Rerank</strong></td><td>REST</td><td><code>rerank-v3.5</code>, top 8</td><td>Per search</td><td><span class="pill ok">Similarity sort</span></td></tr>
+            <tr><td><strong>Google OAuth</strong></td><td>OIDC</td><td>Sign-in, verified email</td><td>Free</td><td><span class="pill ok">Password login</span></td></tr>
+            <tr><td><strong>SMTP relay</strong></td><td>SMTP via Postfix</td><td>Invites, reset, contact</td><td>Provider-dependent</td><td><span class="pill warn">Postfix queue</span> Bounce lifetime 0</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Pattern:</strong> put an <strong>anti-corruption layer</strong> around the model providers. Today <code>llm.py</code> branches on <code>model.startswith("gpt-")</code>, and model IDs are stored as raw strings in <code>plan_limits</code>. A domain-level <code>AnswerTier</code> (<code>basic</code>, <code>standard</code>, <code>premium</code>) should map to provider models inside one adapter. Then replacing a deprecated model is a config change, and failover between providers lives in one place.</p>
+        <div class="callout warn"><b>Embedding lock-in</b><p>All stored vectors are tied to <code>text-embedding-3-large</code>. Store <code>embedding_model</code> on each chunk now, so a future model migration can re-embed in the background and switch per company, not as a stop-the-world rewrite.</p></div>
+      </section>
+
+      <!-- ───────────── 12 ───────────── -->
+      <section id="d12">
+        <div class="sec-head">
+          <span class="eyebrow">Domain 12</span>
+          <div class="row"><h2>Evolutionary Architecture</h2><span class="pill warn">Partial</span></div>
+        </div>
+        <p>The product works and has a credible feature set. The evolution path below is ordered so that each phase removes risk before adding capability, and none of it requires a rewrite.</p>
+        <div class="timeline">
+          <div class="phase">
+            <span class="when">Phase 0 · 2 weeks</span>
+            <h3>Harden</h3>
+            <ul>
+              <li>Remove default secrets; close DB ports</li>
+              <li>Split Redis broker (noeviction) from cache</li>
+              <li>Create HNSW index; drop fp32 column</li>
+              <li>Atomic quota reserve</li>
+              <li>Nightly backups off-host</li>
+            </ul>
+            <span class="team">1 engineer · no new features</span>
+          </div>
+          <div class="phase">
+            <span class="when">Phase 1 · 6–8 weeks</span>
+            <h3>Consolidate</h3>
+            <ul>
+              <li>Merge the 5 services into one modular monolith (worker stays separate)</li>
+              <li>Schema per context; import-linter rules</li>
+              <li>Single NER implementation</li>
+              <li>CI, pytest, Alembic, staging</li>
+              <li>structlog + Prometheus</li>
+            </ul>
+            <span class="team">1–2 engineers</span>
+          </div>
+          <div class="phase">
+            <span class="when">Phase 2 · Q2 2027</span>
+            <h3>Prove quality</h3>
+            <ul>
+              <li>Retrieval eval set; measure graph uplift</li>
+              <li>Outbox + domain events</li>
+              <li>Object storage for uploads</li>
+              <li>LLM adapter with failover</li>
+              <li>RLS on knowledge tables</li>
+            </ul>
+            <span class="team">2–3 engineers</span>
+          </div>
+          <div class="phase">
+            <span class="when">Phase 3 · H2 2027</span>
+            <h3>Platform</h3>
+            <ul>
+              <li>Extract retrieval if it needs its own scaling</li>
+              <li>Connectors (Drive, SharePoint, Confluence)</li>
+              <li>Public API v1 + API keys</li>
+              <li>SSO/SAML, per-tenant keys</li>
+              <li>Managed Postgres + replicas</li>
+            </ul>
+            <span class="team">4–6 engineers</span>
+          </div>
+        </div>
+        <h3>Fitness functions</h3>
+        <div class="tbl"><table>
+          <thead><tr><th>Fitness function</th><th>Threshold</th><th>Runs</th></tr></thead>
+          <tbody>
+            <tr><td>No module imports another context's <code>domain</code> or <code>infra</code> package</td><td>0 violations</td><td>Every PR (import-linter)</td></tr>
+            <tr><td>No SQL references a table outside the module's own schema</td><td>0 violations</td><td>Every PR (sqlfluff rule + DB role grants)</td></tr>
+            <tr><td>Retrieval recall@8 on the golden question set</td><td>≥ 0.80, no drop &gt; 3 pts</td><td>Every PR touching retrieval or ingestion</td></tr>
+            <tr><td>p95 vector search on a 1 M-chunk fixture</td><td>&lt; 150 ms</td><td>Nightly</td></tr>
+            <tr><td>Cross-tenant leakage test (user from company A queries company B's unique phrase)</td><td>0 hits</td><td>Every PR</td></tr>
+            <tr><td>LLM cost per answered query, by plan</td><td>Below 30 % of plan revenue per query</td><td>Weekly report</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Migration path (strangler, in reverse):</strong> create the monolith app and mount the existing routers unchanged under one process. Replace HTTP clients (<code>billing_client.py</code>, <code>notification_client.py</code>) with in-process calls one at a time behind the same function signatures. Delete each service container once the gateway no longer routes to it. Move tables into schemas with <code>ALTER TABLE … SET SCHEMA</code> plus compatibility views, so nothing breaks during the transition.</p>
+      </section>
+
+      <!-- ───────────── ADR ───────────── -->
+      <section id="adr">
+        <div class="sec-head">
+          <span class="eyebrow">Architecture Decision Records</span>
+          <div class="row"><h2>Key decisions</h2><span class="legend"><span><span class="dot ok"></span>Accepted</span><span><span class="dot warn"></span>Proposed</span><span><span class="dot grey"></span>Superseded</span></span></div>
+        </div>
+        <div class="tbl"><table>
+          <thead><tr><th>ID</th><th>Decision</th><th>Status</th><th>Rationale</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">ADR-001</td><td>Five independently deployed microservices</td><td><span class="pill plain"><span class="dot grey"></span>Superseded</span></td><td>Chosen for separation of concerns, but the shared schema and synchronous coupling removed the benefits. Superseded by ADR-002.</td></tr>
+            <tr><td class="mono">ADR-002</td><td>Modular monolith with schema-per-context; ingestion worker deployed separately</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Matches team size and load. Keeps context boundaries enforceable by tooling and DB grants, and removes three network hops from every chat request.</td></tr>
+            <tr><td class="mono">ADR-003</td><td>pgvector in Postgres as the vector store</td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Tenant filters, document status and ANN in one query and one transaction. A dedicated vector DB (Qdrant, Pinecone) is not justified below ~50 M chunks.</td></tr>
+            <tr><td class="mono">ADR-004</td><td>halfvec(3072) with HNSW, fp32 column dropped</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Halves storage with negligible recall loss. HNSW is required for sub-linear search. Alternative: request 1024-dim embeddings to cut the index 3×; decide after the eval set exists.</td></tr>
+            <tr><td class="mono">ADR-005</td><td>Neo4j knowledge graph as second retrieval channel</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Uncertain value. Keep it while an eval measures recall uplift over vector + rerank alone. If uplift is under 3 points, replace it with Postgres entity tables and drop a whole datastore.</td></tr>
+            <tr><td class="mono">ADR-006</td><td>REST + SSE for client API</td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Resource-shaped screens and one-way token streams. SSE works through Nginx without upgrade handling; WebSockets add no value here.</td></tr>
+            <tr><td class="mono">ADR-007</td><td>Celery on Redis for ingestion, broker isolated with <code>noeviction</code></td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Celery stays because retries, routing and Flower already work. The broker must never share an evicting keyspace with the cache.</td></tr>
+            <tr><td class="mono">ADR-008</td><td>Plan-based model routing behind a provider-agnostic <code>AnswerTier</code></td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Keeps the commercial model (tiers) separate from vendor model IDs that are deprecated on vendor timelines, and gives one place to add failover.</td></tr>
+            <tr><td class="mono">ADR-009</td><td>Short-lived access JWT + refresh token</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>7-day tokens carrying <code>team_ids</code> keep removed members in for up to a week. 15-min tokens bound that window without a per-request DB lookup.</td></tr>
+            <tr><td class="mono">ADR-010</td><td>Transactional outbox for domain events</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Guarantees that cache invalidation, graph indexing and metering follow committed state, which avoids dual-write bugs between Postgres, Neo4j and Redis.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <!-- ───────────── Score ───────────── -->
+      <section id="score">
+        <div class="sec-head">
+          <span class="eyebrow">Business &amp; Architecture Score</span>
+          <div class="row"><h2>How the product rates</h2></div>
+        </div>
+        <div class="scores">
+          <div class="score"><span class="lbl">Architecture Complexity Fit</span><div class="track"><div class="fill bad" style="width:40%"></div></div><span class="val">4/10</span><p class="why">Five services, three datastores and a gateway for a team-sized product, with none of the isolation microservices are meant to buy. Consolidating to a modular monolith would raise this to 8.</p></div>
+          <div class="score"><span class="lbl">Market Size (TAM)</span><div class="track"><div class="fill ok" style="width:80%"></div></div><span class="val">8/10</span><p class="why">Enterprise knowledge search and internal Q&amp;A is a multi-billion-dollar category, and every company with documents is a prospect.</p></div>
+          <div class="score"><span class="lbl">Willingness to Pay</span><div class="track"><div class="fill ok" style="width:70%"></div></div><span class="val">7/10</span><p class="why">Teams pay for time saved finding answers. The $29 and $149 price points are realistic for SMBs. Enterprise needs SSO and compliance first.</p></div>
+          <div class="score"><span class="lbl">Technical Moat</span><div class="track"><div class="fill bad" style="width:40%"></div></div><span class="val">4/10</span><p class="why">Hybrid RAG with a graph is replicable with off-the-shelf frameworks. Durable advantage would come from ingestion quality (audio/video/OCR), evaluation discipline and connectors.</p></div>
+          <div class="score"><span class="lbl">Regulatory Risk</span><div class="track"><div class="fill warn" style="width:50%"></div></div><span class="val">5/10</span><p class="why">Customer documents flow to four third-party AI processors. GDPR DPAs, erasure across three stores and EU data residency will be asked for in every serious deal. (Higher score = lower risk.)</p></div>
+          <div class="score"><span class="lbl">Free / OSS Stack Viability</span><div class="track"><div class="fill ok" style="width:80%"></div></div><span class="val">8/10</span><p class="why">Everything except the model APIs is open source and self-hosted on one VM. Variable cost is almost entirely LLM and embedding tokens.</p></div>
+          <div class="score"><span class="lbl">Time to MVP</span><div class="track"><div class="fill ok" style="width:90%"></div></div><span class="val">9/10</span><p class="why">The MVP already exists: auth, multi-tenancy, ingestion of six formats, streaming answers, plans and a polished React UI. Phase 0 hardening is about two weeks.</p></div>
+          <div class="score"><span class="lbl">Competitive Differentiation</span><div class="track"><div class="fill warn" style="width:50%"></div></div><span class="val">5/10</span><p class="why">Audio/video ingestion and team-scoped topics are useful but not unique. Glean, Notion AI and Microsoft Copilot cover similar ground. A clear vertical focus would sharpen it.</p></div>
+        </div>
+        <div class="total"><span class="big">6.4</span><span>average out of 10. A sellable product held back by operational and architectural debt, not by missing features.</span></div>
+      </section>
+
+      <footer>Generated from a review of the <code>query-prism</code> repository at commit <code>b6519ff</code> on 27 Oct 2026. File references are relative to the repository root.</footer>
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById('themeBtn');
+  function current() {
+    var t = root.getAttribute('data-theme');
+    if (t) return t;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  function label() { btn.textContent = current() === 'dark' ? 'Light theme' : 'Dark theme'; }
+  try { var saved = localStorage.getItem('qp-theme'); if (saved) root.setAttribute('data-theme', saved); } catch (e) {}
+  label();
+  btn.addEventListener('click', function () {
+    var next = current() === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('qp-theme', next); } catch (e) {}
+    label();
+  });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  var sections = Object.keys(map).map(function (id) { return document.getElementById(id); }).filter(Boolean);
+  if (!('IntersectionObserver' in window)) return;
+  var visible = {};
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+    var first = sections.find(function (s) { return visible[s.id]; });
+    if (!first) return;
+    links.forEach(function (a) { a.classList.remove('active'); });
+    map[first.id].classList.add('active');
+  }, { rootMargin: '-64px 0px -60% 0px', threshold: 0 });
+  sections.forEach(function (s) { io.observe(s); });
+})();
+</script>

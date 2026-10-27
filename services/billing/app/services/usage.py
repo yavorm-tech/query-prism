@@ -170,6 +170,59 @@ async def increment_query_count(company_id: str) -> None:
         )
 
 
+async def reserve_query(company_id: str) -> str:
+    """
+    Consume one query in a single statement: rolls the month over if needed and
+    only increments while under the plan limit, so concurrent requests can't overshoot.
+    Returns the plan's LLM model.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        model = await conn.fetchval(
+            """
+            WITH period AS (SELECT date_trunc('month', now()) AS start)
+            UPDATE companies c SET
+                queries_used_this_month = CASE
+                    WHEN period.start > date_trunc('month', COALESCE(c.queries_reset_at, 'epoch')) THEN 1
+                    ELSE c.queries_used_this_month + 1
+                END,
+                queries_reset_at = CASE
+                    WHEN period.start > date_trunc('month', COALESCE(c.queries_reset_at, 'epoch')) THEN period.start
+                    ELSE c.queries_reset_at
+                END
+            FROM plan_limits pl, period
+            WHERE c.id = $1
+              AND pl.plan = c.plan
+              AND (
+                  pl.max_queries IS NULL
+                  OR period.start > date_trunc('month', COALESCE(c.queries_reset_at, 'epoch'))
+                  OR c.queries_used_this_month < pl.max_queries
+              )
+            RETURNING pl.llm_model
+            """,
+            company_id,
+        )
+    if model:
+        return model
+
+    # Nothing updated: either the company is unknown or the quota is exhausted.
+    # check_query_limit raises the standard 429 payload in the latter case.
+    await check_query_limit(company_id)
+    return await get_model_for_company(company_id)
+
+
+async def release_query(company_id: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE companies SET queries_used_this_month = GREATEST(0, queries_used_this_month - 1)
+            WHERE id = $1
+            """,
+            company_id,
+        )
+
+
 async def increment_storage(company_id: str, bytes_count: int) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:

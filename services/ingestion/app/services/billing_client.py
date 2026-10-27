@@ -1,10 +1,17 @@
+import logging
 import httpx
 from fastapi import HTTPException
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 def _billing_url(path: str) -> str:
     return f"{get_settings().billing_url}{path}"
+
+
+def _headers() -> dict:
+    return {"X-Internal-Token": get_settings().internal_api_token}
 
 
 async def check_storage_limit(company_id: str, file_size_bytes: int) -> None:
@@ -12,6 +19,7 @@ async def check_storage_limit(company_id: str, file_size_bytes: int) -> None:
         r = await client.post(
             _billing_url("/internal/check/storage"),
             json={"company_id": company_id, "file_size_bytes": file_size_bytes},
+            headers=_headers(),
         )
     if r.status_code == 413:
         raise HTTPException(413, r.json().get("detail", "Storage limit reached"))
@@ -19,17 +27,23 @@ async def check_storage_limit(company_id: str, file_size_bytes: int) -> None:
         raise HTTPException(502, "Billing service error")
 
 
-async def decrement_storage(company_id: str, file_size_bytes: int) -> None:
+async def increment_storage(company_id: str, file_size_bytes: int) -> None:
     async with httpx.AsyncClient(timeout=5.0) as client:
-        await client.post(
-            _billing_url("/internal/storage/decrement"),
+        r = await client.post(
+            _billing_url("/internal/storage/increment"),
             json={"company_id": company_id, "file_size_bytes": file_size_bytes},
+            headers=_headers(),
         )
+    r.raise_for_status()
 
 
-async def get_company_model(company_id: str) -> str:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        r = await client.get(_billing_url(f"/internal/model/{company_id}"))
-    if r.is_success:
-        return r.json().get("model", "claude-haiku-4-5-20251001")
-    return "claude-haiku-4-5-20251001"
+async def decrement_storage(company_id: str, file_size_bytes: int) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                _billing_url("/internal/storage/decrement"),
+                json={"company_id": company_id, "file_size_bytes": file_size_bytes},
+                headers=_headers(),
+            )
+    except httpx.HTTPError as e:
+        logger.warning(f"Failed to decrement storage for company {company_id}: {e}")

@@ -97,11 +97,12 @@ graph TB
 | chat-service | 8003 | 8003 | Internal + Gateway |
 | billing-service | 8004 | 8004 | Internal only |
 | notification-service | 8005 | 8005 | Internal + Gateway (/contact) |
-| postgres | 5432 | 5434 | Internal + Host dev |
-| neo4j-http | 7474 | 7474 | Internal + Host dev |
-| neo4j-bolt | 7687 | 7687 | Internal |
-| redis | 6379 | 6380 | Internal + Host dev |
-| flower | 5555 | 5556 | Host dev only |
+| postgres | 5432 | 127.0.0.1:5434 (dev overlay) | Internal |
+| neo4j-http | 7474 | 127.0.0.1:7474 (dev overlay) | Internal |
+| neo4j-bolt | 7687 | 127.0.0.1:7687 (dev overlay) | Internal |
+| redis (cache) | 6379 | 127.0.0.1:6380 (dev overlay) | Internal |
+| redis-broker | 6379 | 127.0.0.1:6381 (dev overlay) | Internal |
+| flower | 5555 | 127.0.0.1:5556 (dev overlay) | Dev only |
 | nginx-ssl | 80/443 | 80/443 | Public |
 
 ---
@@ -112,7 +113,8 @@ graph TB
 |--------|-----------|---------|
 | `postgres_data` | `/var/lib/postgresql/data` | PostgreSQL persistent data |
 | `neo4j_data` | `/data` | Neo4j persistent data |
-| `redis_data` | `/data` | Redis persistence (AOF) |
+| `redis_data` | `/data` | Answer cache snapshot (RDB) |
+| `redis_broker_data` | `/data` | Celery broker persistence (AOF) |
 | `uploads` | `/app/uploads` | Uploaded document files (shared between ingestion svc + celery worker) |
 | `certbot_conf` | `/etc/letsencrypt` | SSL certificate store |
 | `certbot_www` | `/var/www/certbot` | ACME challenge files |
@@ -138,7 +140,7 @@ The Billing Service and Notification Service (for internal endpoints) are **not 
 
 ## Production Deployment Checklist
 
-- [ ] Set `SECRET_KEY` to a cryptographically random 32+ byte value
+- [ ] Set `SECRET_KEY` and `INTERNAL_API_TOKEN` to cryptographically random 32+ byte values (enforced at startup)
 - [ ] Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`
 - [ ] Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL`
 - [ ] Configure `SMTP_*` environment variables for email delivery
@@ -147,6 +149,7 @@ The Billing Service and Notification Service (for internal endpoints) are **not 
 - [ ] Set `NEO4J_PASSWORD` to a strong password
 - [ ] Mount persistent volumes for PostgreSQL, Neo4j, Redis, and uploads
 - [ ] Restrict Billing Service (8004) to internal network only (already done in Nginx config)
-- [ ] Enable Redis AOF persistence for durability
+- [x] Enable Redis AOF persistence for durability (`redis-broker`)
+- [ ] Schedule `procedures/backup.sh` nightly (cron) and set `BACKUP_S3_URI` for off-host copies
 - [ ] Set up log rotation for all service containers
 - [ ] Configure Flower with authentication for the monitoring UI

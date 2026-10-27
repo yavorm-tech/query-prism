@@ -9,6 +9,10 @@ def _notification_url(path: str) -> str:
     return f"{get_settings().notification_url}{path}"
 
 
+def _headers() -> dict:
+    return {"X-Internal-Token": get_settings().internal_api_token}
+
+
 async def send_invite_email(email: str, company_name: str, team_name: str, invite_token: str) -> None:
     app_url = get_settings().app_url
     accept_url = f"{app_url}/login?invite={invite_token}"
@@ -22,6 +26,7 @@ async def send_invite_email(email: str, company_name: str, team_name: str, invit
                     "team_name": team_name,
                     "accept_url": accept_url,
                 },
+                headers=_headers(),
             )
     except Exception as e:
         logger.warning(f"Failed to send invite email to {email}: {e}")
@@ -35,6 +40,7 @@ async def send_password_reset_email(email: str, reset_token: str) -> None:
             await client.post(
                 _notification_url("/notification/reset-password"),
                 json={"email": email, "reset_url": reset_url},
+                headers=_headers(),
             )
     except Exception as e:
         logger.warning(f"Failed to send password reset email to {email}: {e}")

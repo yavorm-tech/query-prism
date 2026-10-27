@@ -15,12 +15,13 @@ async def find_related_chunk_ids(
     max_chunks: int = 20,
 ) -> list[str]:
     """
-    1. Extract entities from the query using spaCy
+    1. Extract entities from the query with the same extractor ingestion used
     2. Find those entities in Neo4j
     3. Traverse up to max_hops to find related entities
     4. Collect chunk IDs that mention those entities
     """
-    chunk_entities = extract_entities("query", query_text)
+    # One attempt only: this is on the answer path, and vector search covers a miss.
+    chunk_entities = await extract_entities("query", query_text, max_retries=1)
     if not chunk_entities.entities:
         logger.debug("No entities found in query — skipping graph traversal")
         return []
