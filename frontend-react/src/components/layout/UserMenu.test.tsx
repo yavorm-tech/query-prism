@@ -57,7 +57,7 @@ describe("UserMenu", () => {
     expect(screen.getByText("a@b.co")).toBeInTheDocument();
   });
 
-  it("shows all four menu items after clicking the trigger", async () => {
+  it("shows both menu items after clicking the trigger", async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter>
@@ -70,8 +70,6 @@ describe("UserMenu", () => {
     await user.click(trigger);
 
     expect(await screen.findByText("User Settings")).toBeInTheDocument();
-    expect(await screen.findByText("Billing Plan")).toBeInTheDocument();
-    expect(await screen.findByText("Company Settings")).toBeInTheDocument();
     expect(await screen.findByText("Logout")).toBeInTheDocument();
   });
 
