@@ -19,7 +19,7 @@ services:
       - postgres_data:/var/lib/postgresql
       - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
-    mem_limit: 8g
+    mem_limit: 1g
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -38,15 +38,15 @@ services:
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
       NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_server_memory_heap_initial__size: 1g
-      NEO4J_server_memory_heap_max__size: 2g
-      NEO4J_server_memory_pagecache_size: 2g
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 768m
+      NEO4J_server_memory_pagecache_size: 384m
       NEO4J_dbms_security_procedures_unrestricted: apoc.*
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
-    mem_limit: 4g
+    mem_limit: 1536m
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:7474"]
       interval: 20s
@@ -173,7 +173,7 @@ services:
       SMTP_PASSWORD: ""
     volumes:
       - uploads:/app/uploads
-    mem_limit: 2g
+    mem_limit: 1g
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
       interval: 15s
@@ -210,7 +210,7 @@ services:
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
     volumes:
       - uploads:/app/uploads
-    mem_limit: 4g
+    mem_limit: 1536m
     depends_on:
       migrate:
         condition: service_completed_successfully

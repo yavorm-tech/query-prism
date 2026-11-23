@@ -44,9 +44,10 @@ check_host() {
     pass "docker compose ${cv}"
   fi
   local mem_gb; mem_gb=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
-  if (( mem_gb >= 15 )); then pass "${mem_gb} GiB RAM"
-  elif (( mem_gb >= 11 )); then warn "${mem_gb} GiB RAM; 16 GiB recommended (container limits total ~12 GiB)"
-  else fail "${mem_gb} GiB RAM; at least 12 GiB needed, 16 GiB recommended"; fi
+  # Container limits (docker-compose.yml) are sized for a small deployment and total ~7.5 GiB.
+  if (( mem_gb >= 7 )); then pass "${mem_gb} GiB RAM"
+  elif (( mem_gb >= 5 )); then warn "${mem_gb} GiB RAM; 8 GiB recommended (container limits total ~7.5 GiB)"
+  else fail "${mem_gb} GiB RAM; at least 5 GiB needed, 8 GiB recommended"; fi
   local root_dir free_gb; root_dir="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
   free_gb=$(df -BG --output=avail "${root_dir}" 2>/dev/null | tail -n 1 | tr -dc '0-9')
   if (( ${free_gb:-0} >= 20 )); then pass "${free_gb} GB free for Docker (${root_dir})"

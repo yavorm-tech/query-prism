@@ -247,7 +247,7 @@ API *before* it runs the migration, so a failed migration would mean an outage.
 | api unhealthy: `password authentication failed for user "qp_app"` | `docker logs svc_api` | `APP_DB_PASSWORD` changed after migration 0011 created the role; sync the role (below) |
 | api exits: `SECRET_KEY` error | `docker logs svc_api` | Must be 32+ random characters |
 | verify: `bypasses row-level security` | `docker logs svc_api` | api is connecting as the owner; `APP_DB_PASSWORD` must be set and compose must be current |
-| A container keeps restarting | `docker inspect -f '{{.State.OOMKilled}}' <name>` | Out of memory; the host needs 16 GiB |
+| A container keeps restarting | `docker inspect -f '{{.State.OOMKilled}}' <name>` | Out of memory; raise that service's `mem_limit` (limits are sized for an 8 GiB host and a handful of users) |
 | Invite / reset emails don't arrive | `docker logs rag_postfix` | No `SMTP_RELAY_HOST_URL`, or the relay rejects the sender (`SMTP_FROM_EMAIL` domain must be verified with the provider) |
 
 Sync the app role's password with `.env` without printing it:
