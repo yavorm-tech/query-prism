@@ -55,3 +55,21 @@ async def test_deprecated_company_columns_are_dropped_and_restored_on_downgrade(
     assert {"plan", "storage_used_bytes", "max_users"} <= await _company_columns()
     _alembic("upgrade", "head")
     assert "plan" not in await _company_columns()
+
+
+async def test_reset_links_sent_before_hashing_keep_working(client, register):
+    """0009 hashes outstanding reset tokens in place; the raw token in the email still works."""
+    co = await register()
+    _alembic("downgrade", "0008")
+    conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+    try:
+        await conn.execute(
+            "INSERT INTO identity.password_reset_tokens (user_id, token, expires_at) "
+            "VALUES ($1, 'sent-before-0009', now() + interval '1 hour')",
+            co["user_id"],
+        )
+    finally:
+        await conn.close()
+    _alembic("upgrade", "head")
+    r = await client.post("/auth/reset-password", json={"token": "sent-before-0009", "new_password": "a new good password"})
+    assert r.status_code == 204, r.text

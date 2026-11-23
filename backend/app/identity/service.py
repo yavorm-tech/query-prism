@@ -5,8 +5,11 @@ All database operations for auth, company, team and member management.
 import logging
 import re
 import secrets
+import asyncpg
 import bcrypt
 from datetime import datetime, timezone, timedelta
+from app.identity.sessions import hash_token
+from app.shared import db
 from app.shared.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -46,10 +49,9 @@ async def unique_slug(base: str) -> str:
 
 # ── Company ───────────────────────────────────────────────────────────────────
 
-async def create_company(name: str) -> dict:
-    pool = await get_pool()
+async def create_company(name: str, *, conn: asyncpg.Connection | None = None) -> dict:
     slug = await unique_slug(name)
-    async with pool.acquire() as conn:
+    async with db.connection(conn) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO companies (name, slug)
@@ -73,9 +75,8 @@ async def get_company(company_id: str) -> dict | None:
 
 # ── Teams ─────────────────────────────────────────────────────────────────────
 
-async def create_team(company_id: str, name: str, description: str | None = None) -> dict:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+async def create_team(company_id: str, name: str, description: str | None = None, *, conn: asyncpg.Connection | None = None) -> dict:
+    async with db.connection(conn) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO teams (company_id, name, description)
@@ -134,10 +135,10 @@ async def create_user(
     email: str,
     password: str,
     role: str = "member",
+    *, conn: asyncpg.Connection | None = None,
 ) -> dict:
-    pool = await get_pool()
     hashed = hash_password(password)
-    async with pool.acquire() as conn:
+    async with db.connection(conn) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO users (company_id, username, email, password, role)
@@ -155,9 +156,9 @@ async def create_oauth_user(
     email: str,
     google_id: str,
     role: str = "member",
+    *, conn: asyncpg.Connection | None = None,
 ) -> dict:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with db.connection(conn) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO users (company_id, username, email, google_id, role)
@@ -231,9 +232,8 @@ async def authenticate_user(email: str, password: str) -> dict | None:
     return user
 
 
-async def set_default_team(user_id: str, team_id: str) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+async def set_default_team(user_id: str, team_id: str, *, conn: asyncpg.Connection | None = None) -> None:
+    async with db.connection(conn) as conn:
         await conn.execute(
             "UPDATE users SET default_team_id = $1 WHERE id = $2",
             team_id, user_id,
@@ -242,9 +242,8 @@ async def set_default_team(user_id: str, team_id: str) -> None:
 
 # ── Team membership ───────────────────────────────────────────────────────────
 
-async def add_team_member(team_id: str, user_id: str, role: str = "member") -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+async def add_team_member(team_id: str, user_id: str, role: str = "member", *, conn: asyncpg.Connection | None = None) -> None:
+    async with db.connection(conn) as conn:
         await conn.execute(
             """
             INSERT INTO team_members (team_id, user_id, role)
@@ -368,42 +367,25 @@ async def accept_invite(token: str) -> None:
 
 
 async def create_password_reset_token(user_id: str) -> str:
-    import secrets
-    from datetime import datetime, timedelta, timezone
+    """Return a new one-time reset token. Only its SHA-256 hash is stored."""
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Invalidate any existing unused tokens for this user
-        await conn.execute(
-            "UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
-            user_id,
-        )
-        await conn.execute(
-            """
-            INSERT INTO password_reset_tokens (user_id, token, expires_at)
-            VALUES ($1, $2, $3)
-            """,
-            user_id, token, expires_at,
-        )
+        async with conn.transaction():
+            # Invalidate any existing unused tokens for this user
+            await conn.execute(
+                "UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
+                user_id,
+            )
+            await conn.execute(
+                """
+                INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+                VALUES ($1, $2, $3)
+                """,
+                user_id, hash_token(token), expires_at,
+            )
     return token
-
-
-async def get_reset_token(token: str) -> dict | None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT r.*, u.email, u.id AS uid
-            FROM password_reset_tokens r
-            JOIN users u ON u.id = r.user_id
-            WHERE r.token = $1
-              AND r.used_at IS NULL
-              AND r.expires_at > now()
-            """,
-            token,
-        )
-    return dict(row) if row else None
 
 
 async def consume_reset_token(token: str, new_password: str) -> str | None:
@@ -414,10 +396,10 @@ async def consume_reset_token(token: str, new_password: str) -> str | None:
         row = await conn.fetchrow(
             """
             UPDATE password_reset_tokens SET used_at = now()
-            WHERE token = $1 AND used_at IS NULL AND expires_at > now()
+            WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
             RETURNING user_id
             """,
-            token,
+            hash_token(token),
         )
         if not row:
             return None

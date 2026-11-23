@@ -18,8 +18,9 @@
 #   BACKUP_S3_ENDPOINT_URL  for S3-compatible stores (R2, B2, ...); empty for AWS
 #
 # The off-host copy runs the aws CLI in a container (amazon/aws-cli), so the
-# host needs only Docker. On success the script writes <BACKUP_DIR>/LAST_SUCCESS;
-# alert when that file is older than ~26 hours.
+# host needs only Docker. On success the script writes <BACKUP_DIR>/LAST_SUCCESS
+# and <BACKUP_DIR>/metrics/backup.prom, which the monitoring profile alerts on
+# when it is older than 26 hours.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -79,12 +80,30 @@ if [[ -n "${BACKUP_S3_URI}" ]]; then
     -v "${BACKUP_DIR}:/backups:ro" \
     "${AWS_CLI_IMAGE}" "${endpoint[@]}" s3 cp "/backups/${NAME}" "${BACKUP_S3_URI%/}/${NAME}" --only-show-errors
   log "Off-host copy done"
+  OFFSITE=1
 else
   log "WARNING: BACKUP_S3_URI is not set; this backup exists only on this host"
+  OFFSITE=0
 fi
 
 find "${BACKUP_DIR}" -name 'postgres-*.dump' -mtime +"${RETENTION_DAYS}" -print -delete | sed 's/^/Removed old backup: /'
 date -u '+%Y-%m-%dT%H:%M:%SZ' > "${BACKUP_DIR}/LAST_SUCCESS"
+
+# For the monitoring profile: node-exporter's textfile collector reads this
+# directory (alerts BackupStale / BackupNotOffHost). Written atomically.
+mkdir -p "${BACKUP_DIR}/metrics"
+cat > "${BACKUP_DIR}/metrics/backup.prom.tmp" <<METRICS
+# HELP qp_backup_last_success_timestamp_seconds Unix time of the last verified Postgres backup.
+# TYPE qp_backup_last_success_timestamp_seconds gauge
+qp_backup_last_success_timestamp_seconds $(date +%s)
+# HELP qp_backup_offsite 1 if the last backup was copied off-host.
+# TYPE qp_backup_offsite gauge
+qp_backup_offsite ${OFFSITE}
+# HELP qp_backup_size_bytes Size of the last backup.
+# TYPE qp_backup_size_bytes gauge
+qp_backup_size_bytes $(stat -c %s "${OUT}")
+METRICS
+mv "${BACKUP_DIR}/metrics/backup.prom.tmp" "${BACKUP_DIR}/metrics/backup.prom"
 log "Backup complete"
 
 # Restore:

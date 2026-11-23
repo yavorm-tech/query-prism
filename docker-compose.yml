@@ -301,6 +301,73 @@ services:
       - rag_net
 
   # ─────────────────────────────────────────────
+  # Monitoring (opt-in: docker compose --profile monitoring up -d)
+  # Prometheus scrapes api/worker and evaluates monitoring/alerts.yml;
+  # Alertmanager emails ALERT_EMAIL through postfix. Nothing is published
+  # on the host: reach the UIs with an SSH tunnel to 127.0.0.1:9090 / :9093.
+  # ─────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: mon_prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    mem_limit: 512m
+    networks:
+      - rag_net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: mon_alertmanager
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      ALERT_EMAIL: ${ALERT_EMAIL:-}
+      ALERT_FROM: ${SMTP_FROM_EMAIL:-alerts@localhost}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        [ -n "$$ALERT_EMAIL" ] || { echo "Set ALERT_EMAIL in .env" >&2; exit 1; } &&
+        sed -e "s|__ALERT_EMAIL__|$$ALERT_EMAIL|" -e "s|__ALERT_FROM__|$$ALERT_FROM|"
+        /etc/alertmanager/alertmanager.yml.tmpl > /tmp/alertmanager.yml &&
+        exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager
+    volumes:
+      - ./monitoring/alertmanager.yml.tmpl:/etc/alertmanager/alertmanager.yml.tmpl:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    mem_limit: 128m
+    depends_on:
+      - postfix
+    networks:
+      - rag_net
+
+  # Exposes only backups/metrics/*.prom (written by procedures/backup.sh).
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: mon_node_exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    command:
+      - --collector.disable-defaults
+      - --collector.textfile
+      - --collector.textfile.directory=/textfile
+    volumes:
+      - ./backups/metrics:/textfile:ro
+    mem_limit: 64m
+    networks:
+      - rag_net
+
+  # ─────────────────────────────────────────────
   # Certbot — auto-renewal every 12 h
   # ─────────────────────────────────────────────
   certbot:
@@ -321,6 +388,8 @@ volumes:
   redis_data:
   redis_broker_data:
   uploads:          # upload storage when STORAGE_BACKEND=local (api + worker share it)
+  prometheus_data:
+  alertmanager_data:
 
 networks:
   rag_net:

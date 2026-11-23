@@ -130,9 +130,9 @@ async def _ingest_async(document_id: str, storage_key: str, source_type: str):
         INGEST_CHUNKS.inc(len(records))
         logger.info(f"[{document_id}] Inserted {len(chunks)} chunks")
 
-    # 6. Mark complete and announce it in one transaction. Only the first
-    #    transition to 'completed' counts: a duplicate or late run of this task
-    #    must not count the file's storage twice.
+    # 6. Mark complete, count the storage and announce it in one transaction.
+    #    Only the first transition to 'completed' counts: a duplicate or late
+    #    run of this task must not count the file's storage twice.
     async with events.unit_of_work() as uow:
         doc_row = await uow.conn.fetchrow(
             """
@@ -143,13 +143,13 @@ async def _ingest_async(document_id: str, storage_key: str, source_type: str):
             document_id,
         )
         if doc_row:
+            if doc_row["file_size"]:
+                await increment_storage(str(doc_row["company_id"]), doc_row["file_size"], conn=uow.conn)
             # Retrieval drops answers cached without this document; knowledge queues graph extraction.
             await uow.publish(DocumentIngested(
                 document_id=document_id, company_id=str(doc_row["company_id"]),
                 team_id=str(doc_row["team_id"]), visibility=doc_row["visibility"],
             ))
-    if doc_row and doc_row["file_size"]:
-        await increment_storage(str(doc_row["company_id"]), doc_row["file_size"])
     logger.info(f"[{document_id}] Ingestion complete")
 
 

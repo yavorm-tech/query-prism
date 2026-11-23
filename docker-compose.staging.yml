@@ -1,0 +1,88 @@
+# Staging overlay: a second, isolated copy of the stack on the same host as
+# production (or any other host). Use it through procedures/staging.sh, which
+# passes the project name and env file:
+#
+#   docker compose -p query-prism-staging --env-file .env.staging \
+#     -f docker-compose.yml -f docker-compose.staging.yml up -d
+#
+# Isolation from production:
+#   - separate compose project, so its own network and named volumes
+#   - stg_* container names (production uses rag_* / svc_*)
+#   - .env.staging only: production secrets are never loaded
+#   - :staging image tags, so building staging never replaces production's images
+#   - nothing published publicly: the app is on 127.0.0.1:${STAGING_HTTP_PORT:-18080}
+#     (reach it with an SSH tunnel, or put it behind your own proxy with auth)
+#
+# To try a release before production, run it from a separate checkout of that
+# release (e.g. git worktree add ../query-prism-staging <tag>); only one staging
+# stack per host (fixed stg_* names).
+
+x-staging-env: &staging_env
+  env_file: !override
+    - .env.staging
+
+services:
+  postgres:
+    container_name: stg_postgres
+  neo4j:
+    container_name: stg_neo4j
+    environment:
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    mem_limit: 1g
+  redis:
+    container_name: stg_redis
+  redis-broker:
+    container_name: stg_redis_broker
+  postfix:
+    container_name: stg_postfix
+
+  migrate:
+    <<: *staging_env
+    image: query-prism-api:staging
+    container_name: stg_migrate
+  api:
+    <<: *staging_env
+    image: query-prism-api:staging
+    container_name: stg_api
+  worker:
+    <<: *staging_env
+    image: query-prism-worker:staging
+    container_name: stg_worker
+    mem_limit: 3g
+
+  gateway:
+    container_name: stg_gateway
+    ports: !override
+      - "127.0.0.1:${STAGING_API_PORT:-18000}:8000"
+
+  # The frontend proxies /api to the staging gateway; serve it directly instead
+  # of through the production TLS proxies.
+  frontend:
+    image: query-prism-frontend:staging
+    container_name: stg_frontend
+    profiles: !reset []
+    ports:
+      - "127.0.0.1:${STAGING_HTTP_PORT:-18080}:80"
+
+  ssl-proxy-http:
+    container_name: stg_ssl_proxy_http
+    profiles: !override ["never"]
+  ssl-proxy:
+    container_name: stg_ssl_proxy
+    profiles: !override ["never"]
+  certbot:
+    container_name: stg_certbot
+    profiles: !override ["never"]
+
+  prometheus:
+    container_name: stg_prometheus
+    ports: !override
+      - "127.0.0.1:19090:9090"
+  alertmanager:
+    container_name: stg_alertmanager
+    ports: !override
+      - "127.0.0.1:19093:9093"
+  node-exporter:
+    container_name: stg_node_exporter

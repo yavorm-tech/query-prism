@@ -303,19 +303,21 @@ async def delete_document(document_id: str, current_user: dict = Depends(get_cur
     # The delete and its event commit together; graph cleanup and cache
     # invalidation follow from the event (knowledge.handlers, retrieval.handlers).
     async with events.unit_of_work() as uow:
-        filename = await uow.conn.fetchval(
-            "DELETE FROM documents WHERE id = $1 RETURNING original_name", document_id,
+        deleted = await uow.conn.fetchrow(
+            "DELETE FROM documents WHERE id = $1 RETURNING original_name, status, file_size", document_id,
         )
-        if filename is None:
+        if deleted is None:
             raise HTTPException(404, "Document not found")
+        # Storage is only counted once ingestion completes (see worker), so only
+        # undo it then. The status comes from the deleted row itself, in the same
+        # transaction, so a completion racing this delete can't be missed.
+        if deleted["file_size"] and deleted["status"] == "completed":
+            await decrement_storage(str(row["company_id"]), deleted["file_size"], conn=uow.conn)
         await uow.publish(DocumentDeleted(
             document_id=document_id, company_id=str(row["company_id"]),
             team_id=str(row["team_id"]), visibility=row["visibility"],
         ))
-
-    # Storage is only counted once ingestion completes (see worker), so only undo it then.
-    if row["file_size"] and row["status"] == "completed":
-        await decrement_storage(str(row["company_id"]), row["file_size"])
+    filename = deleted["original_name"]
 
     await log_event(
         company_id=str(row["company_id"]),

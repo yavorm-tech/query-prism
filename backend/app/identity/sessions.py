@@ -20,7 +20,8 @@ from app.shared.db import get_pool
 REUSE_GRACE = timedelta(seconds=30)
 
 
-def _hash(raw: str) -> str:
+def hash_token(raw: str) -> str:
+    """SHA-256 of a one-time token; only this is stored (refresh and reset tokens)."""
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -32,7 +33,7 @@ async def _insert(conn, user_id: str, family_id: str) -> str:
         INSERT INTO refresh_tokens (user_id, family_id, token_hash, expires_at)
         VALUES ($1, $2, $3, $4)
         """,
-        user_id, family_id, _hash(raw), expires_at,
+        user_id, family_id, hash_token(raw), expires_at,
     )
     return raw
 
@@ -54,7 +55,7 @@ async def rotate(raw: str) -> tuple[str, str] | None:
                 SELECT id, user_id, family_id, expires_at, used_at, revoked_at
                 FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE
                 """,
-                _hash(raw),
+                hash_token(raw),
             )
             if not row or row["revoked_at"] is not None:
                 return None
@@ -83,7 +84,7 @@ async def end_session(raw: str) -> None:
             WHERE revoked_at IS NULL
               AND family_id = (SELECT family_id FROM refresh_tokens WHERE token_hash = $1)
             """,
-            _hash(raw),
+            hash_token(raw),
         )
 
 

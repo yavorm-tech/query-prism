@@ -107,9 +107,10 @@ worker → same datastores; consumes redis-broker queue "ingestion"
 - [ ] Mount persistent volumes for PostgreSQL, Neo4j, Redis, and uploads
 - [x] Enable Redis AOF persistence for durability (`redis-broker`)
 - [ ] Set `BACKUP_S3_URI` (+ `AWS_*`) in `.env`, run `procedures/install-backup-cron.sh` on the host, then `procedures/backup.sh` once to check
-- [ ] Alert when `backups/LAST_SUCCESS` is older than 26 h
+- [ ] Set `ALERT_EMAIL` and start the `monitoring` profile (Prometheus, Alertmanager, backup age via node-exporter)
 - [ ] Set `FRONTEND_URL` / `APP_URL` to the public https origin (CORS allow-list and the refresh cookie's `Secure` flag follow it)
 - [ ] Optional: `STORAGE_BACKEND=s3` + `S3_*` to keep uploads off the host volume
+- [ ] Rehearse each release on staging first: `procedures/staging.sh refresh` (migrations against a scrubbed copy of production)
 - [ ] Set up log rotation for all service containers
 - [x] Flower runs only in the dev overlay, bound to 127.0.0.1
-- [ ] Scrape `api:8000/metrics` and `worker:9101/metrics` with Prometheus
+- [x] Scrape `api:8000/metrics` and `worker:9101/metrics` with Prometheus (`monitoring` profile)

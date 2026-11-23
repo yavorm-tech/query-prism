@@ -1,3 +1,6 @@
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
 import asyncpg
 from app.shared.config import get_settings
 from app.shared.loop_local import LoopLocal
@@ -29,3 +32,20 @@ async def get_pool() -> asyncpg.Pool:
 
 async def close_pool():
     await _pool.close()
+
+
+@asynccontextmanager
+async def connection(conn: asyncpg.Connection | None = None) -> AsyncIterator[asyncpg.Connection]:
+    """Use the caller's connection (and so its transaction) if given, else a pooled one.
+
+    Lets a service function take part in a unit of work:
+        async def open_subscription(company_id, *, conn=None):
+            async with db.connection(conn) as c: ...
+    """
+    if conn is not None:
+        yield conn
+        return
+    pool = await get_pool()
+    async with pool.acquire() as c:
+        yield c
+

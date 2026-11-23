@@ -9,7 +9,9 @@ pass them in (limit checks) or they come through the TenantDirectory port
 """
 import logging
 from typing import Protocol
+import asyncpg
 from fastapi import HTTPException
+from app.shared import db
 from app.shared.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,8 @@ def set_tenant_directory(directory: TenantDirectory) -> None:
 
 # ── Subscriptions ─────────────────────────────────────────────────────────────
 
-async def open_subscription(company_id: str, plan: str = DEFAULT_PLAN) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+async def open_subscription(company_id: str, plan: str = DEFAULT_PLAN, *, conn: asyncpg.Connection | None = None) -> None:
+    async with db.connection(conn) as conn:
         await conn.execute(
             "INSERT INTO subscriptions (company_id, plan) VALUES ($1, $2) ON CONFLICT (company_id) DO NOTHING",
             company_id, plan,
@@ -230,18 +231,16 @@ async def release_query(company_id: str) -> None:
         )
 
 
-async def increment_storage(company_id: str, bytes_count: int) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+async def increment_storage(company_id: str, bytes_count: int, *, conn: asyncpg.Connection | None = None) -> None:
+    async with db.connection(conn) as conn:
         await conn.execute(
             "UPDATE subscriptions SET storage_used_bytes = storage_used_bytes + $2, updated_at = now() WHERE company_id = $1",
             company_id, bytes_count,
         )
 
 
-async def decrement_storage(company_id: str, bytes_count: int) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+async def decrement_storage(company_id: str, bytes_count: int, *, conn: asyncpg.Connection | None = None) -> None:
+    async with db.connection(conn) as conn:
         await conn.execute(
             """
             UPDATE subscriptions SET

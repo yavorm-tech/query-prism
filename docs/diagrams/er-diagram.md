@@ -102,7 +102,7 @@ erDiagram
     password_reset_tokens {
         uuid id PK
         uuid user_id FK
-        text token
+        text token_hash
         timestamptz expires_at
         timestamptz used_at
     }

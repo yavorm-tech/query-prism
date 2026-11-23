@@ -98,3 +98,31 @@ async def test_default_topic_handler_is_idempotent(client, register):
     await create_default_topic(CompanyRegistered(company_id=co["company_id"], team_id=co["team_id"], owner_id=co["user_id"]))
     r = await client.get("/topics", params={"team_id": co["team_id"]}, headers=co["headers"])
     assert [t["name"] for t in r.json()].count("Main") == 1
+
+
+async def test_failed_sign_up_keeps_nothing(client, monkeypatch):
+    """Company, owner, team, subscription and CompanyRegistered commit together or not at all."""
+    import uuid
+    from app.metering import api as metering
+
+    async def broken(company_id, plan="starter", *, conn=None):
+        raise RuntimeError("metering down")
+    monkeypatch.setattr(metering, "open_subscription", broken)
+
+    tag = uuid.uuid4().hex[:8]
+    r = await client.post("/auth/register", json={
+        "company_name": f"Broken {tag}", "username": f"u{tag}",
+        "email": f"u{tag}@example.test", "password": "correct horse battery",
+    })
+    assert r.status_code == 500
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT COUNT(*) FROM companies WHERE name = $1", f"Broken {tag}") == 0
+        assert await conn.fetchval("SELECT COUNT(*) FROM users WHERE email = $1", f"u{tag}@example.test") == 0
+
+    monkeypatch.undo()   # the same email can now sign up normally
+    r = await client.post("/auth/register", json={
+        "company_name": f"Broken {tag}", "username": f"u{tag}",
+        "email": f"u{tag}@example.test", "password": "correct horse battery",
+    })
+    assert r.status_code == 201, r.text

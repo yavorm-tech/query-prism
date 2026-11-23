@@ -170,7 +170,7 @@ Short-lived single-use tokens for password recovery.
 |--------|------|-------------|
 | `id` | UUID PK | Unique identifier |
 | `user_id` | UUID FK → users | Target user |
-| `token` | TEXT UNIQUE | Secret token sent in email |
+| `token_hash` | TEXT UNIQUE | SHA-256 of the token sent in the email |
 | `expires_at` | TIMESTAMPTZ | 1 hour from creation |
 | `used_at` | TIMESTAMPTZ | When consumed (null = unused) |
 

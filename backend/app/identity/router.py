@@ -1,4 +1,5 @@
 import logging
+import asyncpg
 from fastapi import APIRouter, HTTPException, status, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -10,7 +11,7 @@ from app.identity.tokens import (
 )
 from app.shared.config import get_settings
 from app.identity.service import (
-    create_company, create_team, create_user, authenticate_user,
+    create_company, create_team, create_user, create_oauth_user, authenticate_user,
     get_user_by_email, get_teams_for_company,
     get_team, get_team_members, add_team_member, remove_team_member,
     create_invite, get_invite_by_token, accept_invite, INVITE_EXPIRY_HOURS,
@@ -124,10 +125,34 @@ class InvitePreviewResponse(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def onboard_company(company_id: str, team_id: str, owner_id: str) -> None:
-    """Shared tail of password and Google sign-up: plan + announce (workspace adds the default topic)."""
-    await metering.open_subscription(company_id)
-    await events.publish(CompanyRegistered(company_id=company_id, team_id=team_id, owner_id=owner_id))
+async def register_company(
+    company_name: str, username: str, email: str,
+    *, password: str | None = None, google_id: str | None = None,
+) -> dict:
+    """Create company, owner, "General" team and subscription, and announce
+    CompanyRegistered (workspace adds the default topic), all in one transaction.
+    Shared by password and Google sign-up. Returns the owner user."""
+    try:
+        async with events.unit_of_work() as uow:
+            conn = uow.conn
+            company = await create_company(company_name, conn=conn)
+            company_id = str(company["id"])
+            if google_id is not None:
+                user = await create_oauth_user(company_id, username, email, google_id, role="owner", conn=conn)
+            else:
+                user = await create_user(company_id, username, email, password, role="owner", conn=conn)
+            team = await create_team(company_id, "General", "Default team", conn=conn)
+            user_id, team_id = str(user["id"]), str(team["id"])
+            await add_team_member(team_id, user_id, role="admin", conn=conn)
+            await set_default_team(user_id, team_id, conn=conn)
+            await metering.open_subscription(company_id, conn=conn)
+            await uow.publish(CompanyRegistered(company_id=company_id, team_id=team_id, owner_id=user_id))
+    except asyncpg.UniqueViolationError:
+        # Lost a race with another sign-up for the same email; nothing was kept.
+        raise HTTPException(400, "Email already registered")
+    user["default_team_id"] = team["id"]
+    logger.info(f"New company registered: {company['name']} by {user['email']}")
+    return user
 
 
 # ── Register ──────────────────────────────────────────────────────────────────
@@ -141,27 +166,10 @@ async def register(request: CompanyRegisterRequest, response: Response):
     if existing:
         raise HTTPException(400, "Email already registered")
 
-    company = await create_company(request.company_name)
-    user = await create_user(
-        company_id=str(company["id"]),
-        username=request.username,
-        email=request.email,
-        password=request.password,
-        role="owner",
+    user = await register_company(
+        request.company_name, request.username, request.email, password=request.password,
     )
-    team = await create_team(
-        company_id=str(company["id"]),
-        name="General",
-        description="Default team",
-    )
-    await add_team_member(str(team["id"]), str(user["id"]), role="admin")
-    await set_default_team(str(user["id"]), str(team["id"]))
-    await onboard_company(str(company["id"]), str(team["id"]), str(user["id"]))
-
-    user["default_team_id"] = team["id"]
     token = await issue_session(user, response)
-
-    logger.info(f"New company registered: {company['name']} by {user['email']}")
     return _token_response(token)
 
 

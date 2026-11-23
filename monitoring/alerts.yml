@@ -1,0 +1,74 @@
+groups:
+  - name: query-prism
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"api|worker"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} is not answering metrics scrapes"
+
+      - alert: BackupStale
+        expr: time() - qp_backup_last_success_timestamp_seconds > 26 * 3600
+        labels: {severity: critical}
+        annotations:
+          summary: "Last successful Postgres backup was {{ $value | humanizeDuration }} ago"
+          runbook: "Check backups/backup.log; run procedures/backup.sh by hand."
+
+      - alert: BackupNeverRecorded
+        expr: absent(qp_backup_last_success_timestamp_seconds)
+        for: 26h
+        labels: {severity: critical}
+        annotations:
+          summary: "No successful backup recorded (is procedures/install-backup-cron.sh installed?)"
+
+      - alert: BackupNotOffHost
+        expr: qp_backup_offsite == 0
+        labels: {severity: warning}
+        annotations:
+          summary: "The last backup was not copied off-host (BACKUP_S3_URI is unset)"
+
+      - alert: OutboxEventDead
+        expr: increase(qp_outbox_dead_total[15m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Outbox gave up on a {{ $labels.event }} event after 10 attempts"
+          runbook: "SELECT * FROM shared.outbox WHERE processed_at IS NULL AND attempts >= 10; fix the cause, then reset attempts to 0."
+
+      - alert: OutboxBacklog
+        expr: qp_outbox_pending > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} domain events undelivered for 15 minutes"
+
+      - alert: LLMFailingOver
+        expr: sum by (tier, route) (increase(qp_llm_failovers_total[10m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "LLM route {{ $labels.route }} ({{ $labels.tier }}) keeps failing; answers use the next route"
+
+      - alert: LLMErrors
+        expr: |
+          sum(rate(qp_llm_errors_total[5m]))
+            / clamp_min(sum(rate(qp_answer_ttft_seconds_count[5m])) + sum(rate(qp_llm_errors_total[5m])), 1e-9)
+            > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "More than 5 % of answers fail on every LLM route"
+
+      - alert: IngestionStuck
+        expr: qp_documents_by_status{status="pending"} > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} documents pending for 15 minutes (worker or broker down?)"
+
+      - alert: SlowAnswers
+        expr: histogram_quantile(0.95, sum by (le) (rate(qp_answer_ttft_seconds_bucket{cached="false"}[15m]))) > 4
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 time to first answer token is {{ $value | humanize }} s"

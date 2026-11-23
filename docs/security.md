@@ -24,7 +24,7 @@
 
 ### Password Reset
 - 1-hour single-use tokens (`used_at` set on use; requesting a new one invalidates older ones)
-- Stored as-is in `password_reset_tokens` (not hashed)
+- Only the SHA-256 hash is stored (`password_reset_tokens.token_hash`); the raw token exists only in the email
 - A successful reset revokes all of the user's sessions
 
 ### Invite Tokens

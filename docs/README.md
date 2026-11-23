@@ -98,5 +98,41 @@ procedures/backup.sh                  # run now (dump → verify → copy to BAC
 ```
 
 Set `BACKUP_S3_URI` (and `AWS_*`, or `BACKUP_S3_ENDPOINT_URL` for an S3-compatible
-store) in `.env`; without it the dumps stay on the host. Alert when
-`backups/LAST_SUCCESS` is older than 26 hours.
+store) in `.env`; without it the dumps stay on the host. Each successful run
+writes `backups/metrics/backup.prom`, which the monitoring profile alerts on.
+
+## Staging
+
+A second, isolated copy of the stack (`docker-compose.staging.yml`): its own
+compose project, `stg_*` containers, volumes, `:staging` image tags and
+`.env.staging` (production's `.env` is never read), listening only on
+127.0.0.1:18080 (app) and :18000 (API).
+
+```bash
+cp .env.staging.example .env.staging          # own secrets, STAGING_PASSWORD
+procedures/staging.sh up                      # build + start (empty database)
+procedures/staging.sh refresh                 # load the newest backup, migrate, scrub
+ssh -L 18080:127.0.0.1:18080 <host>           # open http://localhost:18080
+```
+
+`refresh` is the release rehearsal: it restores a production backup, applies
+the pending migrations to real data, then runs `procedures/staging-scrub.sql`
+(emails → `user-<id>@staging.invalid`, Google links, avatars, tokens, invites
+and audit emails/IPs removed, every password set to `STAGING_PASSWORD`,
+undelivered events dropped). Customer documents and questions stay, so keep
+staging access as tight as production's. To test a release before deploying it,
+run staging from a separate checkout of that release.
+
+## Monitoring and alerts
+
+```bash
+docker compose --profile monitoring up -d   # needs ALERT_EMAIL in .env
+ssh -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 <host>   # Prometheus / Alertmanager UIs
+```
+
+Prometheus scrapes `api` and `worker` and evaluates `monitoring/alerts.yml`;
+Alertmanager emails `ALERT_EMAIL` through the `postfix` service. Alerts: a
+service down, the backup older than 26 h, not copied off-host or never run, an
+outbox event given up on or a 15-minute backlog, an LLM route failing over, over
+5 % of answers failing on every route, documents pending for 15 minutes, and p95
+time to first token over 4 s.

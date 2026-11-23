@@ -164,11 +164,13 @@ different hosts. Files are deleted once ingestion finishes or finally fails.
   `qp_outbox_dead_total`, `qp_ingest_duration_seconds`, `qp_documents_by_status`,
   `http_request_duration_seconds`.
 
-Suggested alerts: `qp_documents_by_status{status="pending"}` > 0 for 15 min;
-`rate(qp_llm_errors_total[5m])` > 5 % of answers; any increase of
-`qp_llm_failovers_total` for 10 min (a provider or model is failing);
-`qp_outbox_pending` > 0 for 15 min or any `qp_outbox_dead_total`; p95 of
-`qp_answer_ttft_seconds` > 4 s for 15 min; `backups/LAST_SUCCESS` older than 26 h.
+Alerts live in `monitoring/alerts.yml` and run in the opt-in `monitoring` compose
+profile (Prometheus → Alertmanager → email via `postfix`): `ServiceDown`,
+`BackupStale` (> 26 h), `BackupNeverRecorded`, `BackupNotOffHost`,
+`OutboxEventDead`, `OutboxBacklog` (15 min), `LLMFailingOver`, `LLMErrors`
+(> 5 % of answers), `IngestionStuck` (pending 15 min) and `SlowAnswers` (p95 time
+to first token > 4 s). Backup age comes from `backups/metrics/backup.prom`, written
+by `procedures/backup.sh` and exposed by node-exporter's textfile collector.
 
 ## Data Flow: Document Ingestion
 

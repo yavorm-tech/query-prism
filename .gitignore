@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+!.env.staging.example
 backups/
 __pycache__/
 .ruff_cache/

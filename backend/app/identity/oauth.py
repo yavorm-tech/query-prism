@@ -8,14 +8,10 @@ from pydantic import BaseModel
 
 from app.shared.config import get_settings
 from app.shared.security import decode_token
-from app.identity.router import _token_response, onboard_company
+from app.identity.router import _token_response, register_company
 from app.identity import sessions
 from app.identity.tokens import create_access_token, issue_session, set_refresh_cookie
-from app.identity.service import (
-    create_oauth_user, create_company, create_team,
-    add_team_member, set_default_team,
-    get_user_by_email, get_user_by_google_id, link_google_account,
-)
+from app.identity.service import get_user_by_email, get_user_by_google_id, link_google_account
 
 router = APIRouter(prefix="/auth/oauth", tags=["oauth"])
 
@@ -122,19 +118,6 @@ async def complete_oauth(request: OAuthCompleteRequest, response: Response):
     if await get_user_by_email(email):
         raise HTTPException(400, "Email already registered — please log in instead")
 
-    company = await create_company(request.company_name)
-    user    = await create_oauth_user(
-        company_id=str(company["id"]),
-        username=request.username,
-        email=email,
-        google_id=google_id,
-        role="owner",
-    )
-    team = await create_team(str(company["id"]), "General", "Default team")
-    await add_team_member(str(team["id"]), str(user["id"]), role="admin")
-    await set_default_team(str(user["id"]), str(team["id"]))
-    await onboard_company(str(company["id"]), str(team["id"]), str(user["id"]))
-
-    user["default_team_id"] = team["id"]
+    user = await register_company(request.company_name, request.username, email, google_id=google_id)
     token = await issue_session(user, response)
     return _token_response(token)

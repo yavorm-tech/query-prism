@@ -118,6 +118,9 @@ async def test_password_reset_ends_all_sessions(client):
     user_id = decode_token(body["access_token"])["sub"]
     from app.identity.service import create_password_reset_token
     reset = await create_password_reset_token(user_id)
+    async with (await get_pool()).acquire() as conn:
+        stored = await conn.fetchval("SELECT token_hash FROM password_reset_tokens WHERE user_id = $1", user_id)
+    assert stored != reset and len(stored) == 64       # only the SHA-256 is stored
     r = await client.post("/auth/reset-password", json={"token": reset, "new_password": "another good password"})
     assert r.status_code == 204
     assert (await _refresh(client, raw)).status_code == 401

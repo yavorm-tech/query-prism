@@ -1,0 +1,16 @@
+# Rendered at container start: __ALERT_EMAIL__ / __ALERT_FROM__ come from .env.
+route:
+  receiver: email
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: email
+    email_configs:
+      - to: "__ALERT_EMAIL__"
+        from: "__ALERT_FROM__"
+        smarthost: postfix:25
+        require_tls: false
+        send_resolved: true

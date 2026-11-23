@@ -106,6 +106,14 @@ async def test_worker_retries_with_file_is_idempotent_counts_storage_and_clears_
     await _run_worker(document_id, key)
     assert (await _doc_state(document_id))[1:] == (chunks, len(body))   # storage not counted twice
 
+    # Deleting the completed document gives the storage back, in the same transaction.
+    r = await client.delete(f"/ingest/{document_id}", headers=co["headers"])
+    assert r.status_code in (200, 204), r.text
+    async with (await get_pool()).acquire() as conn:
+        assert await conn.fetchval(
+            "SELECT storage_used_bytes FROM subscriptions WHERE company_id = $1", co["company_id"],
+        ) == 0
+
 
 async def test_worker_marks_failed_only_after_last_attempt(client, register, queued, ai_stubs, monkeypatch):
     co = await register()
