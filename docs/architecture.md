@@ -9,7 +9,7 @@
 | Framework | FastAPI 0.115.0 + Uvicorn |
 | Async | asyncio, asyncpg |
 | Task Queue | Celery 5.4.0 + dedicated Redis broker |
-| Authentication | JWT (python-jose), OAuth2 (Google) |
+| Authentication | JWT (PyJWT, HS256), OAuth2 (Google) |
 | Rate Limiting | slowapi (per user, Redis-backed) |
 | Logging / Metrics | structlog (JSON) / prometheus-client |
 | Migrations | Alembic (raw SQL revisions) |

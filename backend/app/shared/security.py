@@ -1,5 +1,5 @@
 """Authentication primitives shared by every context: JWT verification and access checks."""
-from jose import JWTError, jwt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.shared.config import get_settings
@@ -12,8 +12,9 @@ bearer_scheme = HTTPBearer(auto_error=True)
 
 def decode_token(token: str) -> dict:
     try:
+        # PyJWT verifies the signature and exp; only HS256 is accepted (no "none", no key confusion).
         return jwt.decode(token, get_settings().secret_key, algorithms=[ALGORITHM])
-    except JWTError as e:
+    except jwt.InvalidTokenError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",

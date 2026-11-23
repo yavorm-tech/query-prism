@@ -159,7 +159,8 @@ Admins and owners can filter the audit log by `team_id` and `event_type`.
 There is no service-to-service HTTP. All modules run in the one `api` process
 (plus the Celery `worker`) and call each other through their `api.py`.
 
-- Only the Nginx gateway is published. PostgreSQL, Neo4j and both Redis
+- Only the TLS proxy (80/443) is public. The Nginx gateway's port 8000 is bound to
+  `127.0.0.1` (local dev and smoke tests), so the API can't be reached around TLS. PostgreSQL, Neo4j and both Redis
   instances have no host ports in production; `docker-compose.dev.yml` binds
   them to `127.0.0.1` for local development only.
 - `/metrics` on `api` and `worker:9101` are reachable only inside the Docker

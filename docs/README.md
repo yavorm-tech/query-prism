@@ -42,7 +42,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 # Access
 # Frontend:      http://localhost:3000
-# API Gateway:   http://localhost:8000
+# API Gateway:   http://localhost:8000   (bound to 127.0.0.1 only)
 # Flower (queue):http://localhost:5556   (dev overlay only)
 ```
 
@@ -56,7 +56,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 | Container | Port | Description |
 |---------|------|-------------|
-| Nginx Gateway | 8000 | External API entry point, routes everything to `api` |
+| Nginx Gateway | 127.0.0.1:8000 | API entry point behind the TLS proxy, routes everything to `api`; loopback-only on the host |
 | api | 8000 (internal) | All HTTP endpoints; `/metrics` internal only |
 | worker | 9101 (internal) | Celery ingestion worker; Prometheus metrics |
 | migrate | — | Runs `alembic upgrade head` once per deploy |

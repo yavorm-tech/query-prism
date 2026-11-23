@@ -110,7 +110,7 @@ services:
   # Postfix mail relay
   # ─────────────────────────────────────────────
   postfix:
-    image: boky/postfix:latest
+    image: boky/postfix:5.2.1
     container_name: rag_postfix
     restart: unless-stopped
     environment:
@@ -224,15 +224,18 @@ services:
       - rag_net
   # ─────────────────────────────────────────────
   # Nginx API Gateway — port 8000
+  # Browsers reach it through ssl-proxy / frontend on the Docker network. The
+  # host port is loopback-only (local Vite dev, smoke tests): exposing it on all
+  # interfaces would let anyone bypass TLS and the edge proxy.
   # ─────────────────────────────────────────────
   gateway:
-    image: nginx:stable-alpine
+    image: nginx:1.30.7-alpine
     container_name: svc_gateway
     restart: unless-stopped
     volumes:
       - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     mem_limit: 128m
     depends_on:
       api:
@@ -264,7 +267,7 @@ services:
   # Nginx HTTP proxy — port 80 only (dev / cert bootstrap)
   # ─────────────────────────────────────────────
   ssl-proxy-http:
-    image: nginx:stable-alpine
+    image: nginx:1.30.7-alpine
     container_name: rag_ssl_proxy_http
     restart: unless-stopped
     profiles: ["http"]
@@ -284,7 +287,7 @@ services:
   # Nginx SSL proxy — ports 80 + 443
   # ─────────────────────────────────────────────
   ssl-proxy:
-    image: nginx:stable-alpine
+    image: nginx:1.30.7-alpine
     container_name: rag_ssl_proxy
     restart: unless-stopped
     profiles: ["ssl"]
@@ -373,7 +376,7 @@ services:
   # Certbot — auto-renewal every 12 h
   # ─────────────────────────────────────────────
   certbot:
-    image: certbot/certbot
+    image: certbot/certbot:v5.10.0
     container_name: rag_certbot
     restart: unless-stopped
     profiles: ["ssl"]

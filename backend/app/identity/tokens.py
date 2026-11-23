@@ -1,8 +1,8 @@
 """Token issuing — identity is the only context that creates JWTs."""
 from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import Response
-from jose import jwt
 
 from app.shared.config import get_settings
 from app.shared.security import ACCESS_TOKEN_TYPE, ALGORITHM

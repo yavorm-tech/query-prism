@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 import pytest
-from jose import jwt
+import jwt
 from starlette.requests import Request
 
 from app.shared import rate_limit
@@ -111,3 +111,34 @@ def test_refresh_cookie_secure_follows_frontend_scheme():
     assert Settings(frontend_url="https://app.example").refresh_cookie_is_secure
     assert not Settings(frontend_url="http://localhost").refresh_cookie_is_secure
     assert Settings(frontend_url="http://localhost", refresh_cookie_secure=True).refresh_cookie_is_secure
+
+
+def _token_rejected(token: str) -> bool:
+    from fastapi import HTTPException
+    from app.shared.security import decode_token
+    try:
+        decode_token(token)
+    except HTTPException as e:
+        return e.status_code == 401
+    return False
+
+
+def test_issued_tokens_round_trip():
+    from datetime import timedelta
+    from app.identity.tokens import create_access_token
+    from app.shared.security import decode_token
+    claims = decode_token(create_access_token({"sub": "u1", "team_ids": ["t1"]}, timedelta(minutes=5)))
+    assert claims["sub"] == "u1" and claims["team_ids"] == ["t1"] and isinstance(claims["exp"], int)
+
+
+def test_expired_wrong_key_and_unsigned_tokens_are_rejected():
+    import base64
+    import json
+    import time
+    key = os.environ["SECRET_KEY"]
+    assert _token_rejected(jwt.encode({"sub": "u", "exp": int(time.time()) - 5}, key, algorithm="HS256"))
+    assert _token_rejected(jwt.encode({"sub": "u"}, "another-key-of-sufficient-length!!", algorithm="HS256"))
+    assert _token_rejected(jwt.encode({"sub": "u"}, key, algorithm="HS512"))      # only HS256
+    b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()  # noqa: E731
+    assert _token_rejected(f"{b64({'alg': 'none', 'typ': 'JWT'})}.{b64({'sub': 'u'})}.")
+    assert _token_rejected("not-a-jwt")
