@@ -1,4 +1,4 @@
-# Auth Service API
+# Auth API (identity module)
 
 **Base URL:** `/auth`  
 **Served by:** `api` (port 8000, via the gateway)  

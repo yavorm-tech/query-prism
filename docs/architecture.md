@@ -5,7 +5,7 @@
 ### Backend
 | Layer | Technology |
 |-------|-----------|
-| Language | Python 3.x |
+| Language | Python 3.12 |
 | Framework | FastAPI 0.115.0 + Uvicorn |
 | Async | asyncio, asyncpg |
 | Task Queue | Celery 5.4.0 + dedicated Redis broker |
@@ -30,7 +30,7 @@
 | Re-ranking | Cohere API |
 | Token Counting | tiktoken |
 | Chunking | LlamaIndex SentenceSplitter |
-| NER | spaCy |
+| NER | OpenAI GPT-4o-mini (shared by indexing and query) |
 
 ### Document Processing
 | Format | Library |
@@ -149,20 +149,21 @@ Suggested alerts: `qp_documents_by_status{status="pending"}` > 0 for 15 min;
 User uploads file
        │
        ▼
-Ingestion API ──► validates type/size
+knowledge (POST /ingest) ──► validates type/size, team/topic access
        │          ──► checks storage quota (metering)
        │          ──► stores metadata in PostgreSQL (status=pending)
        │          ──► saves file to disk
        ▼
-Celery Queue (redis-broker)
+send_task → redis-broker (queue "ingestion")
        │
        ▼
 Celery Worker
   1. Load file ──► extract raw text
   2. Chunk text (LlamaIndex SentenceSplitter)
   3. Embed chunks (OpenAI batch API)  ──► PostgreSQL chunks table (pgvector)
-  4. NER + relation extraction (spaCy) ──► Neo4j knowledge graph
-  5. Update document status → "completed"
+  4. Count storage (metering), status → "completed"
+  5. Publish DocumentIngested (retrieval drops cached answers)
+  6. Queue build_knowledge_graph: NER + relations (GPT-4o-mini) ──► Neo4j
        │
        ▼
 PostgreSQL + Neo4j ready for queries
@@ -176,7 +177,7 @@ PostgreSQL + Neo4j ready for queries
 User sends query
        │
        ▼
-Chat API ──► reserves one query atomically (metering)
+retrieval (/chat) ──► reserves one query atomically (metering)
        │    ──► checks Redis cache (hit → return cached)
        │
        ▼
@@ -193,7 +194,7 @@ LLM (Claude / GPT based on plan)
   └── Non-streaming: full answer returned
        │
        ▼
-Store in query_history + increment billing counter
+Store in query_history (quota was already reserved; released on no-context or pre-LLM errors)
 Cache result in Redis
 ```
 
@@ -201,7 +202,7 @@ Cache result in Redis
 
 ## Multi-Tenancy Model
 
-Every resource is scoped to a `company_id`. Strict row-level isolation is enforced at the application layer.
+Every resource is scoped to a `company_id`. Isolation is enforced in the application layer (no Postgres RLS yet) and covered by integration tests.
 
 ```
 Company (tenant)

@@ -8,18 +8,19 @@
 
 | Document | Description |
 |----------|-------------|
-| [Architecture Overview](./architecture.md) | System design, tech stack, service breakdown |
+| [Architecture Overview](./architecture.md) | System design, tech stack, modules and their rules |
+| [Architecture Review](./architecture-document.html) | Oct 2026 review, roadmap (Phases 0–3) and ADRs |
 | [Data Models](./data-models.md) | Database schema, field definitions, relationships |
 | [Security & Permissions](./security.md) | Auth, RBAC, rate limiting, audit trail |
 | **API Reference** | |
-| [Auth API](./api/auth.md) | Registration, login, OAuth, teams, invites |
-| [Ingestion API](./api/ingestion.md) | File upload, document management |
-| [Chat API](./api/chat.md) | Query, streaming, topics |
-| [Billing API](./api/billing.md) | Usage quotas, plan limits |
-| [Notification API](./api/notification.md) | Email sending |
+| [Auth API](./api/auth.md) | Registration, login, OAuth, teams, invites (identity) |
+| [Ingestion API](./api/ingestion.md) | File upload, document management (knowledge) |
+| [Chat API](./api/chat.md) | Query, streaming, topics (retrieval, workspace) |
+| [Metering API](./api/billing.md) | Usage quotas, plan limits (metering) |
+| [Notification API](./api/notification.md) | Contact form, transactional email (notification) |
 | **Diagrams** | |
-| [Component Diagram](./diagrams/component-diagram.md) | High-level service interaction |
-| [Class Diagram](./diagrams/class-diagram.md) | Service classes and their relationships |
+| [Component Diagram](./diagrams/component-diagram.md) | Containers and the modules inside `api` |
+| [Module Diagram](./diagrams/class-diagram.md) | Module APIs, dependencies and domain events |
 | [ER Diagram](./diagrams/er-diagram.md) | Database entity-relationship diagram |
 | [Sequence Diagrams](./diagrams/sequence-diagrams.md) | Key user-flow step-by-step sequences |
 | [Deployment Diagram](./diagrams/deployment-diagram.md) | Infrastructure and container layout |
@@ -51,9 +52,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 ---
 
-## Service Ports
+## Containers and Ports
 
-| Service | Port | Description |
+| Container | Port | Description |
 |---------|------|-------------|
 | Nginx Gateway | 8000 | External API entry point, routes everything to `api` |
 | api | 8000 (internal) | All HTTP endpoints; `/metrics` internal only |

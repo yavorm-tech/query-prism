@@ -249,6 +249,7 @@ footer { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--lin
           <div><span class="k">Recommended style</span><span class="v"><strong>Modular monolith</strong> with schema-per-context, plus a separately scaled ingestion worker</span></div>
           <div><span class="k">Most urgent fixes</span><span class="v">Default secrets, DB ports exposed on host, Redis broker using LRU eviction, missing HNSW index</span></div>
         </div>
+        <div class="callout warn"><b>Status update · 23 Nov 2026</b><p>This review describes the code at commit <code>b6519ff</code> (27 Oct 2026), before Phases 0 and 1. Both phases are now built: secrets and ports are locked down, the broker is split, HNSW and atomic quotas are in, and the five services are one modular monolith (<code>backend/</code>) with schema-per-context, CI, Alembic, structured logs and Prometheus. The findings and scores below are kept as the baseline. Still open from those phases: scheduled off-host backups, staging, DB-level schema grants, the 7-day JWT (ADR-009) and dropping the deprecated <code>companies</code> plan/usage columns. See <code>docs/architecture.md</code> for the current design.</p></div>
         <div class="legend">
           <span><span class="dot ok"></span>Meets the framework</span>
           <span><span class="dot warn"></span>Partial: works, but with structural gaps</span>
@@ -760,25 +761,25 @@ footer { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--lin
         <p>The product works and has a credible feature set. The evolution path below is ordered so that each phase removes risk before adding capability, and none of it requires a rewrite.</p>
         <div class="timeline">
           <div class="phase">
-            <span class="when">Phase 0 · 2 weeks</span>
+            <span class="when">Phase 0 · 2 weeks · <span class="pill ok">Done</span></span>
             <h3>Harden</h3>
             <ul>
               <li>Remove default secrets; close DB ports</li>
               <li>Split Redis broker (noeviction) from cache</li>
               <li>Create HNSW index; drop fp32 column</li>
               <li>Atomic quota reserve</li>
-              <li>Nightly backups off-host</li>
+              <li>Nightly backups off-host (script done; cron + S3 target still to set up)</li>
             </ul>
             <span class="team">1 engineer · no new features</span>
           </div>
           <div class="phase">
-            <span class="when">Phase 1 · 6–8 weeks</span>
+            <span class="when">Phase 1 · 6–8 weeks · <span class="pill ok">Done</span></span>
             <h3>Consolidate</h3>
             <ul>
               <li>Merge the 5 services into one modular monolith (worker stays separate)</li>
               <li>Schema per context; import-linter rules</li>
               <li>Single NER implementation</li>
-              <li>CI, pytest, Alembic, staging</li>
+              <li>CI, pytest, Alembic, staging (staging still open)</li>
               <li>structlog + Prometheus</li>
             </ul>
             <span class="team">1–2 engineers</span>
@@ -833,12 +834,12 @@ footer { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--lin
           <thead><tr><th>ID</th><th>Decision</th><th>Status</th><th>Rationale</th></tr></thead>
           <tbody>
             <tr><td class="mono">ADR-001</td><td>Five independently deployed microservices</td><td><span class="pill plain"><span class="dot grey"></span>Superseded</span></td><td>Chosen for separation of concerns, but the shared schema and synchronous coupling removed the benefits. Superseded by ADR-002.</td></tr>
-            <tr><td class="mono">ADR-002</td><td>Modular monolith with schema-per-context; ingestion worker deployed separately</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Matches team size and load. Keeps context boundaries enforceable by tooling and DB grants, and removes three network hops from every chat request.</td></tr>
+            <tr><td class="mono">ADR-002</td><td>Modular monolith with schema-per-context; ingestion worker deployed separately</td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Matches team size and load. Keeps context boundaries enforceable by tooling and DB grants, and removes three network hops from every chat request. Built in Phase 1 (commit <code>b0b65cb</code>); boundaries are enforced by import-linter and architecture tests, not yet by DB grants.</td></tr>
             <tr><td class="mono">ADR-003</td><td>pgvector in Postgres as the vector store</td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Tenant filters, document status and ANN in one query and one transaction. A dedicated vector DB (Qdrant, Pinecone) is not justified below ~50 M chunks.</td></tr>
-            <tr><td class="mono">ADR-004</td><td>halfvec(3072) with HNSW, fp32 column dropped</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Halves storage with negligible recall loss. HNSW is required for sub-linear search. Alternative: request 1024-dim embeddings to cut the index 3×; decide after the eval set exists.</td></tr>
+            <tr><td class="mono">ADR-004</td><td>halfvec(3072) with HNSW, fp32 column dropped</td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Halves storage with negligible recall loss. HNSW is required for sub-linear search. Built in Phase 0; the fp32 drop is the manual migration <code>postgres/migrations/006</code>. Alternative: request 1024-dim embeddings to cut the index 3×; decide after the eval set exists.</td></tr>
             <tr><td class="mono">ADR-005</td><td>Neo4j knowledge graph as second retrieval channel</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Uncertain value. Keep it while an eval measures recall uplift over vector + rerank alone. If uplift is under 3 points, replace it with Postgres entity tables and drop a whole datastore.</td></tr>
             <tr><td class="mono">ADR-006</td><td>REST + SSE for client API</td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Resource-shaped screens and one-way token streams. SSE works through Nginx without upgrade handling; WebSockets add no value here.</td></tr>
-            <tr><td class="mono">ADR-007</td><td>Celery on Redis for ingestion, broker isolated with <code>noeviction</code></td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Celery stays because retries, routing and Flower already work. The broker must never share an evicting keyspace with the cache.</td></tr>
+            <tr><td class="mono">ADR-007</td><td>Celery on Redis for ingestion, broker isolated with <code>noeviction</code></td><td><span class="pill ok"><span class="dot ok"></span>Accepted</span></td><td>Celery stays because retries, routing and Flower already work. The broker must never share an evicting keyspace with the cache.</td></tr>
             <tr><td class="mono">ADR-008</td><td>Plan-based model routing behind a provider-agnostic <code>AnswerTier</code></td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Keeps the commercial model (tiers) separate from vendor model IDs that are deprecated on vendor timelines, and gives one place to add failover.</td></tr>
             <tr><td class="mono">ADR-009</td><td>Short-lived access JWT + refresh token</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>7-day tokens carrying <code>team_ids</code> keep removed members in for up to a week. 15-min tokens bound that window without a per-request DB lookup.</td></tr>
             <tr><td class="mono">ADR-010</td><td>Transactional outbox for domain events</td><td><span class="pill warn"><span class="dot warn"></span>Proposed</span></td><td>Guarantees that cache invalidation, graph indexing and metering follow committed state, which avoids dual-write bugs between Postgres, Neo4j and Redis.</td></tr>

@@ -1,8 +1,8 @@
-# Notification Service API
+# Notification API (notification module)
 
 **Base URL:** `/`  
 **Served by:** `api` (port 8000, via the gateway)  
-**Visibility:** Internal endpoints called service-to-service; `/contact` is accessible via Nginx gateway  
+**Visibility:** `/contact` through the gateway; invite and reset emails are sent in-process  
 **Transport:** Postfix SMTP relay
 
 ---
@@ -50,70 +50,25 @@ Content-Type: application/json
 
 ---
 
-## Internal Endpoints
+## In-process API (`app.notification.api`)
 
-Called by other services within the Docker network. Not accessible externally.
+There are no internal HTTP endpoints. The identity module calls these functions
+directly. Sending never raises: an SMTP failure is logged and the invite or
+password-reset request still succeeds. User-supplied values are HTML-escaped.
 
-### Send Invite Email
-
-Sent by the identity module (in-process, `app.notification.api`) when a company admin creates an invite.
-
-```
-POST /notification/invite
-Content-Type: application/json
-```
-
-**Request Body**
-```json
-{
-  "email": "bob@example.com",
-  "company_name": "Acme Corp",
-  "team_name": "Engineering",
-  "accept_url": "https://app.example.com/invite/accept/<token>"
-}
-```
-
-**Response `200`**
-```json
-{ "ok": true }
-```
-
-**Email Template:** HTML email with the company name, team name, and a call-to-action button linking to `accept_url`. Expires notice included (24 hours).
-
----
-
-### Send Password Reset Email
-
-Sent by the identity module (in-process, `app.notification.api`) when a user requests password recovery.
-
-```
-POST /notification/reset-password
-Content-Type: application/json
-```
-
-**Request Body**
-```json
-{
-  "email": "jane@acme.com",
-  "reset_url": "https://app.example.com/reset-password?token=<token>"
-}
-```
-
-**Response `200`**
-```json
-{ "ok": true }
-```
-
-**Email Template:** HTML email with a reset password button linking to `reset_url`. Expiry warning included (1 hour).
+| Function | Called by | Email |
+|----------|-----------|-------|
+| `send_invite_email(email, company_name, team_name, invite_token)` | `POST /auth/invite` | Invitation with an "Accept Invitation" button linking to `{APP_URL}/login?invite=<token>` |
+| `send_password_reset_email(email, reset_token)` | `POST /auth/forgot-password` | Reset button linking to `{APP_URL}/reset-password?token=<token>`; link valid 1 hour |
 
 ---
 
 ## Email Delivery Stack
 
 ```
-Notification Service
+app.notification (api process)
         │
-        ▼ SMTP (localhost:25)
+        ▼ SMTP (postfix:25)
     Postfix Container
         │
         ▼ Relay (port 587/465)

@@ -8,12 +8,9 @@ erDiagram
         uuid id PK
         text name
         text slug
-        text plan
-        int max_storage_mb
-        int max_users
-        int max_teams
-        int queries_used_this_month
-        bigint storage_used_bytes
+        text plan "deprecated (0004)"
+        int queries_used_this_month "deprecated (0004)"
+        bigint storage_used_bytes "deprecated (0004)"
         timestamptz created_at
     }
 
@@ -77,7 +74,6 @@ erDiagram
         int chunk_index
         text content
         int token_count
-        vector embedding
         halfvec embedding_hv
         jsonb metadata
     }
@@ -127,6 +123,14 @@ erDiagram
         timestamptz created_at
     }
 
+    subscriptions {
+        uuid company_id PK
+        text plan FK
+        int queries_used_this_month
+        timestamptz queries_reset_at
+        bigint storage_used_bytes
+    }
+
     plan_limits {
         text plan PK
         int max_queries
@@ -145,7 +149,8 @@ erDiagram
     companies ||--o{ query_history : "records"
     companies ||--o{ audit_log : "records"
     companies ||--o{ invites : "sends"
-    companies }o--|| plan_limits : "subscribes to"
+    companies ||--|| subscriptions : "has"
+    subscriptions }o--|| plan_limits : "on plan"
 
     teams ||--o{ team_members : "has"
     teams ||--o{ topics : "contains"
@@ -175,30 +180,23 @@ erDiagram
 ```mermaid
 graph LR
     subgraph Neo4j["Neo4j Knowledge Graph"]
-        E1["Entity\n(name, type, company_id)"]
-        E2["Entity\n(name, type, company_id)"]
-        C["Chunk\n(chunk_id, document_id)"]
-        D["Document\n(document_id)"]
+        E1["Entity\n(id, name, type, normalized)"]
+        E2["Entity\n(id, name, type, normalized)"]
+        C["Chunk\n(id, document_id, chunk_index)"]
+        D["Document\n(id, filename, source_type)"]
 
-        E1 -->|RELATED_TO| E2
-        E1 -->|MENTIONED_IN| C
-        E2 -->|MENTIONED_IN| C
-        C -->|BELONGS_TO| D
+        D -->|HAS_CHUNK| C
+        C -->|MENTIONS| E1
+        C -->|MENTIONS| E2
+        E1 -->|"RELATED_TO {predicate, weight}"| E2
     end
 ```
 
-**Entity Types** (spaCy `en_core_web_sm` labels):
+**Entity Types** (extracted by GPT-4o-mini, `app/shared/ai/ner.py`):
+`Person`, `Organisation`, `Location`, `Product`, `Event`, `Work`, `Law`, `Date`,
+`Money`, `Group`.
 
-| Label | Description |
-|-------|-------------|
-| `PERSON` | People, including fictional |
-| `ORG` | Companies, agencies, institutions |
-| `GPE` | Countries, cities, states |
-| `LOC` | Non-GPE locations |
-| `PRODUCT` | Products, objects |
-| `DATE` | Absolute or relative dates |
-| `MONEY` | Monetary values |
-| `LAW` | Named documents / laws |
+The graph stores no tenant ids; access rules are applied in PostgreSQL.
 
 ---
 
@@ -214,4 +212,5 @@ graph LR
 | Topic → Documents | 1:N | Optional grouping |
 | Document → Chunks | 1:N | A document is split into many chunks |
 | User → Documents | 1:N | User uploads documents |
-| Company → plan_limits | N:1 | Many companies on the same plan |
+| Company → subscriptions | 1:1 | Plan and usage counters (`metering`) |
+| Subscriptions → plan_limits | N:1 | Many companies on the same plan |

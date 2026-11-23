@@ -1,7 +1,11 @@
 # Sequence Diagrams
 
-> **Note (v2):** this diagram shows the pre-v2 microservices. The same responsibilities now live in modules of one API process (`backend/app/<context>`); see `docs/architecture.md` for the current structure. Flows are unchanged except that service-to-service HTTP calls are now in-process calls.
+All HTTP requests go Browser → Nginx gateway → `api` (one FastAPI process). Inside
+`api`, participants are **modules** (`backend/app/<module>`) calling each other
+in-process through their `api.py`; nothing here is a network hop except the
+datastores, the Celery broker and external providers.
 
+---
 
 ## 1. User Registration Flow
 
@@ -10,26 +14,31 @@ sequenceDiagram
     actor User
     participant Frontend
     participant Nginx
-    participant AuthSvc as Auth Service
-    participant BillingSvc as Billing Service
+    participant Identity as identity
+    participant Metering as metering
+    participant Events as shared.events
+    participant Workspace as workspace
     participant Postgres
 
     User->>Frontend: Fill registration form
     Frontend->>Nginx: POST /auth/register
-    Nginx->>AuthSvc: Forward request
+    Nginx->>Identity: Forward to api:8000
 
-    AuthSvc->>Postgres: Check email uniqueness
-    Postgres-->>AuthSvc: Not found
+    Identity->>Postgres: Check email uniqueness
+    Postgres-->>Identity: Not found
 
-    AuthSvc->>Postgres: INSERT company
-    AuthSvc->>Postgres: INSERT user (owner role)
-    AuthSvc->>Postgres: INSERT default team
-    AuthSvc->>Postgres: INSERT default topic
-    AuthSvc->>Postgres: INSERT team_member (owner → default team)
+    Identity->>Postgres: INSERT company
+    Identity->>Postgres: INSERT user (owner)
+    Identity->>Postgres: INSERT team "General"
+    Identity->>Postgres: INSERT team_member (owner → General, admin)
+    Identity->>Metering: open_subscription(company_id)
+    Metering->>Postgres: INSERT metering.subscriptions (starter)
+    Identity->>Events: publish CompanyRegistered
+    Events->>Workspace: create_default_topic
+    Workspace->>Postgres: INSERT topic "Main"
 
-    AuthSvc->>AuthSvc: Build JWT payload
-    AuthSvc-->>Nginx: {access_token, token_type}
-    Nginx-->>Frontend: 200 OK
+    Identity->>Identity: Build JWT payload
+    Identity-->>Frontend: {access_token, token_type}
     Frontend->>Frontend: Store token, redirect to app
 ```
 
@@ -42,33 +51,33 @@ sequenceDiagram
     actor User
     participant Frontend
     participant Nginx
-    participant AuthSvc as Auth Service
+    participant Identity as identity (oauth)
     participant Google
 
     User->>Frontend: Click "Sign in with Google"
     Frontend->>Nginx: GET /auth/oauth/google
-    Nginx->>AuthSvc: Forward
-    AuthSvc-->>Frontend: 302 Redirect to Google
+    Nginx->>Identity: Forward
+    Identity-->>Frontend: 302 Redirect to Google
 
     User->>Google: Consent + authenticate
-    Google-->>AuthSvc: Callback with auth code
+    Google-->>Identity: GET /auth/oauth/google/callback?code=…
 
-    AuthSvc->>Google: Exchange code for ID token
-    Google-->>AuthSvc: ID token + user info
+    Identity->>Google: Exchange code for tokens (httpx)
+    Google-->>Identity: ID token + user info
 
     alt Existing user
-        AuthSvc->>AuthSvc: Generate JWT
-        AuthSvc-->>Frontend: {access_token}
+        Identity->>Identity: Generate JWT
+        Identity-->>Frontend: {access_token}
     else New user
-        AuthSvc->>AuthSvc: Generate short-lived pending_token
-        AuthSvc-->>Frontend: {pending_token, email}
+        Identity->>Identity: Generate pending_token (15 min)
+        Identity-->>Frontend: {pending_token, email}
         Frontend->>User: Show complete-signup form
         User->>Frontend: Enter company_name + username
         Frontend->>Nginx: POST /auth/oauth/complete
-        Nginx->>AuthSvc: Forward
-        AuthSvc->>AuthSvc: Validate pending_token
-        AuthSvc->>AuthSvc: Create company + user
-        AuthSvc-->>Frontend: {access_token}
+        Nginx->>Identity: Forward
+        Identity->>Identity: Validate pending_token
+        Identity->>Identity: Create company, user, team, then onboard_company (same as registration)
+        Identity-->>Frontend: {access_token}
     end
 ```
 
@@ -81,47 +90,48 @@ sequenceDiagram
     actor User
     participant Frontend
     participant Nginx
-    participant IngestSvc as Ingestion Service
-    participant BillingSvc as Billing Service
+    participant Knowledge as knowledge (api)
+    participant Metering as metering
     participant Postgres
-    participant Redis
-    participant Worker as Celery Worker
+    participant Broker as redis-broker
+    participant Worker as worker (Celery)
     participant OpenAI
+    participant Retrieval as retrieval (cache handler)
     participant Neo4j
 
     User->>Frontend: Select file
     Frontend->>Nginx: POST /ingest (multipart)
-    Nginx->>IngestSvc: Forward
+    Nginx->>Knowledge: Forward
 
-    IngestSvc->>BillingSvc: POST /internal/check/storage {company_id, file_size}
-    BillingSvc->>Postgres: Check storage_used vs max_storage_mb
-    Postgres-->>BillingSvc: Usage data
-    BillingSvc-->>IngestSvc: 200 OK (quota available)
+    Knowledge->>Knowledge: Check team / topic access, file type
+    Knowledge->>Metering: check_storage_limit(company_id, size)
+    Metering-->>Knowledge: OK (or 413)
+    Knowledge->>Knowledge: Stream file to uploads volume in 1 MB pieces
+    Knowledge->>Postgres: INSERT document (status=pending)
+    Knowledge->>Broker: send_task("app.worker.ingest_document")
+    Knowledge-->>Frontend: {document_id, job_id, status: "pending"}
 
-    IngestSvc->>Postgres: INSERT document (status=pending)
-    IngestSvc->>IngestSvc: Save file to disk
-    IngestSvc->>Redis: Queue Celery task (ingest_document)
-    IngestSvc-->>Frontend: {document_id, job_id, status: "pending"}
-
-    Note over Worker: Asynchronous processing starts
+    Note over Worker: Asynchronous; retried up to 3× (file kept between attempts)
 
     Worker->>Postgres: UPDATE document status=processing
     Worker->>Worker: Load file & extract text
-    Worker->>Worker: Split into chunks (LlamaIndex)
-    Worker->>OpenAI: Embed chunks (batch API)
-    OpenAI-->>Worker: Embedding vectors [3072-dim]
-    Worker->>Postgres: INSERT chunks with embeddings
-    Worker->>Worker: NER extraction (spaCy)
-    Worker->>Worker: Relation extraction
-    Worker->>Neo4j: MERGE Entity nodes + relationships
+    Worker->>Worker: Split into chunks (LlamaIndex, 512 tokens)
+    Worker->>OpenAI: Embed chunks (text-embedding-3-large)
+    OpenAI-->>Worker: 3072-dim vectors
+    Worker->>Postgres: DELETE + INSERT chunks (halfvec) in one transaction
+    Worker->>Metering: increment_storage(company_id, file_size)
     Worker->>Postgres: UPDATE document status=completed
-    Worker->>Postgres: UPDATE company storage_used_bytes
+    Worker->>Retrieval: publish DocumentIngested → drop cached answers
+    Worker->>Broker: send_task("app.graph_worker.build_knowledge_graph")
+
+    Note over Worker: Graph task (same worker, separate task)
+    Worker->>OpenAI: NER per chunk (GPT-4o-mini) + relation extraction
+    Worker->>Neo4j: MERGE Document, Chunk, Entity nodes; MENTIONS / RELATED_TO edges
 
     Frontend->>Nginx: GET /ingest/{document_id} (polling)
-    Nginx->>IngestSvc: Forward
-    IngestSvc->>Postgres: SELECT document status
-    Postgres-->>IngestSvc: status=completed
-    IngestSvc-->>Frontend: {status: "completed"}
+    Nginx->>Knowledge: Forward
+    Knowledge->>Postgres: SELECT document status
+    Knowledge-->>Frontend: {status: "completed"}
 ```
 
 ---
@@ -133,9 +143,9 @@ sequenceDiagram
     actor User
     participant Frontend
     participant Nginx
-    participant ChatSvc as Chat Service
-    participant BillingSvc as Billing Service
-    participant Redis
+    participant Retrieval as retrieval
+    participant Metering as metering
+    participant Redis as redis (cache)
     participant Postgres
     participant Neo4j
     participant Cohere
@@ -143,48 +153,41 @@ sequenceDiagram
 
     User->>Frontend: Type question + Send
     Frontend->>Nginx: POST /chat
-    Nginx->>ChatSvc: Forward
+    Nginx->>Retrieval: Forward
 
-    ChatSvc->>BillingSvc: POST /internal/check/queries
-    BillingSvc-->>ChatSvc: 200 OK
+    Retrieval->>Retrieval: Check team scope belongs to caller's company
+    Retrieval->>Metering: reserve_query(company_id)
+    Note over Metering: One atomic UPDATE: rolls the month over,<br/>increments only while under the limit
+    Metering-->>Retrieval: plan model (or 429)
 
-    ChatSvc->>Redis: GET cache key
+    Retrieval->>Redis: GET cached answer
     alt Cache hit
-        Redis-->>ChatSvc: Cached response
-        ChatSvc-->>Frontend: {answer, sources, cached: true}
+        Redis-->>Retrieval: Cached answer + sources
+        Retrieval->>Metering: release_query (cached answers are free)
+        Retrieval-->>Frontend: {answer, sources, cached: true}
     else Cache miss
-        ChatSvc->>ChatSvc: Embed query (OpenAI)
+        Retrieval->>Retrieval: Embed query (OpenAI)
 
-        par Hybrid retrieval
-            ChatSvc->>Postgres: Vector search (pgvector cosine, top-20)
+        par Hybrid retrieval (separate pooled connections)
+            Retrieval->>Postgres: Vector search (HNSW, top 20, tenant filter)
         and
-            ChatSvc->>Neo4j: Graph search (entity traversal)
+            Retrieval->>Neo4j: Query entities (GPT-4o-mini NER) → related chunk ids (≤ 2 hops, over-fetch 10×)
+            Retrieval->>Postgres: Filter those chunk ids by tenant access, top 20
         end
 
-        Postgres-->>ChatSvc: Vector results
-        Neo4j-->>ChatSvc: Graph results
+        Retrieval->>Cohere: Re-rank candidates → top 8
+        Cohere-->>Retrieval: Ranked chunks (falls back to similarity order on error)
+        Retrieval->>Retrieval: Assemble context (≤ 6000 tokens)
 
-        ChatSvc->>ChatSvc: Merge & deduplicate results
+        Retrieval->>LLM: Generate answer (query + context)
+        LLM-->>Retrieval: Answer text
 
-        ChatSvc->>Cohere: Re-rank top-20 → top-5
-        Cohere-->>ChatSvc: Re-ranked SourceChunks
-
-        ChatSvc->>ChatSvc: Assemble context string
-
-        ChatSvc->>BillingSvc: GET /internal/model/{company_id}
-        BillingSvc-->>ChatSvc: {model: "claude-haiku-..."}
-
-        ChatSvc->>LLM: Generate answer (query + context)
-        LLM-->>ChatSvc: Answer text
-
-        ChatSvc->>Postgres: INSERT query_history
-        ChatSvc->>BillingSvc: POST /internal/queries/increment
-        ChatSvc->>Redis: SET cache key (TTL)
-
-        ChatSvc-->>Frontend: {answer, sources, cached: false}
+        Retrieval->>Postgres: INSERT query_history
+        Retrieval->>Redis: SET cached answer (TTL 1 h)
+        Retrieval-->>Frontend: {answer, sources, cached: false}
     end
 
-    Frontend->>User: Display answer + sources
+    Note over Retrieval,Metering: No context found, or an error before the LLM call → release_query
 ```
 
 ---
@@ -196,27 +199,33 @@ sequenceDiagram
     actor User
     participant Frontend
     participant Nginx
-    participant ChatSvc as Chat Service
+    participant Retrieval as retrieval
+    participant Metering as metering
     participant LLM as LLM (Claude/GPT)
 
     User->>Frontend: Type question + Send
-    Frontend->>Nginx: GET /chat/stream (SSE connection)
-    Nginx->>ChatSvc: Forward (long-lived connection)
+    Frontend->>Nginx: GET /chat/stream?query=…&topic_id=… (SSE)
+    Nginx->>Retrieval: Forward (buffering off, long-lived)
 
-    Note over ChatSvc: Retrieval + re-ranking (same as POST /chat)
+    Retrieval->>Retrieval: Check team / topic access
+    Retrieval->>Metering: reserve_query(company_id)
 
-    ChatSvc->>LLM: stream_answer(query, context, model)
+    Note over Retrieval: Cache lookup, retrieval + re-ranking (same as POST /chat)
 
+    Retrieval->>LLM: stream_answer(query, context, model)
     loop For each token
-        LLM-->>ChatSvc: token
-        ChatSvc-->>Frontend: data: {"type":"token","content":"The "}
+        LLM-->>Retrieval: token
+        Retrieval-->>Frontend: data: {"type":"token","content":"The "}
     end
 
-    ChatSvc-->>Frontend: data: {"type":"sources","content":[...]}
-    ChatSvc-->>Frontend: data: {"type":"done","content":null}
+    Retrieval->>Retrieval: Save question history, audit "question.asked", cache answer
+    Retrieval-->>Frontend: data: {"type":"sources","content":[...]}
+    Retrieval-->>Frontend: data: {"type":"done"}
 
-    Frontend->>Frontend: Assemble full answer from tokens
-    Frontend->>User: Display streamed answer
+    alt Error
+        Retrieval-->>Frontend: data: {"type":"error","content":"Something went wrong…"}
+        Note over Retrieval,Metering: Quota released only if the LLM call had not started
+    end
 ```
 
 ---
@@ -228,42 +237,35 @@ sequenceDiagram
     actor Admin
     actor Invitee
     participant Frontend
-    participant AuthSvc as Auth Service
-    participant NotifSvc as Notification Service
-    participant Email as Email (Postfix)
+    participant Identity as identity
+    participant Metering as metering
+    participant Notification as notification
+    participant Email as Postfix
     participant Postgres
 
     Admin->>Frontend: Enter invitee email + team
-    Frontend->>AuthSvc: POST /auth/invite
+    Frontend->>Identity: POST /auth/invite
 
-    AuthSvc->>AuthSvc: Check admin permissions
-    AuthSvc->>BillingSvc: POST /internal/check/users
-    BillingSvc-->>AuthSvc: 200 OK
-
-    AuthSvc->>Postgres: INSERT invite (token, expires_at=+24h)
-    AuthSvc->>NotifSvc: POST /notification/invite {email, accept_url}
-    NotifSvc->>Email: Send HTML invite email via SMTP
+    Identity->>Identity: Require company admin; team must be in caller's company
+    Identity->>Postgres: INSERT invite (token, expires_at = +24 h)
+    Identity->>Notification: send_invite_email(...)
+    Notification->>Email: HTML invite email via SMTP (failures logged, not raised)
     Email-->>Invitee: Invitation email
 
-    AuthSvc-->>Frontend: {id, token, expires_at}
-    Frontend->>Admin: "Invite sent"
+    Identity-->>Frontend: {id, token, email, expires_at}
 
     Invitee->>Frontend: Click link in email
-    Frontend->>AuthSvc: GET /auth/invite/{token}
-    AuthSvc->>Postgres: SELECT invite by token
-    Postgres-->>AuthSvc: {company_name, team_name, email}
-    AuthSvc-->>Frontend: Invite preview
+    Frontend->>Identity: GET /auth/invite/{token}
+    Identity->>Postgres: SELECT invite by token
+    Identity-->>Frontend: Invite preview (company, team, email)
 
     Invitee->>Frontend: Set username + password
-    Frontend->>AuthSvc: POST /auth/invite/{token}/accept
-
-    AuthSvc->>Postgres: Validate token (not expired, not used)
-    AuthSvc->>Postgres: INSERT user
-    AuthSvc->>Postgres: INSERT team_member
-    AuthSvc->>Postgres: UPDATE invite accepted_at
-    AuthSvc->>AuthSvc: Generate JWT
-    AuthSvc-->>Frontend: {access_token}
-    Frontend->>Invitee: Logged in to workspace
+    Frontend->>Identity: POST /auth/invite/{token}/accept
+    Identity->>Postgres: Validate token (not expired, not used)
+    Identity->>Metering: check_user_limit(company_id, user_count)
+    Metering-->>Identity: OK (or 403)
+    Identity->>Postgres: INSERT user, team_member; mark invite accepted
+    Identity-->>Frontend: {access_token}
 ```
 
 ---
@@ -274,33 +276,26 @@ sequenceDiagram
 sequenceDiagram
     actor User
     participant Frontend
-    participant AuthSvc as Auth Service
-    participant NotifSvc as Notification Service
+    participant Identity as identity
+    participant Notification as notification
     participant Postgres
 
     User->>Frontend: Enter email on forgot-password page
-    Frontend->>AuthSvc: POST /auth/forgot-password {email}
+    Frontend->>Identity: POST /auth/forgot-password {email}
 
-    AuthSvc->>Postgres: SELECT user by email
+    Identity->>Postgres: SELECT user by email
     alt User exists
-        AuthSvc->>Postgres: INSERT password_reset_tokens (token, expires=+1h)
-        AuthSvc->>NotifSvc: POST /notification/reset-password {email, reset_url}
-        NotifSvc-->>User: Password reset email
+        Identity->>Postgres: INSERT password_reset_tokens (expires = +1 h)
+        Identity->>Notification: send_password_reset_email(...)
+        Notification-->>User: Password reset email
     end
 
-    Note over AuthSvc: Always returns 204 (prevents email enumeration)
-    AuthSvc-->>Frontend: 204 No Content
-    Frontend->>User: "If account exists, check your email"
+    Note over Identity: Always returns 204 (prevents email enumeration)
+    Identity-->>Frontend: 204 No Content
 
-    User->>Frontend: Click link in email
-    Frontend->>User: Show new-password form
-    User->>Frontend: Enter new password
-    Frontend->>AuthSvc: POST /auth/reset-password {token, new_password}
-
-    AuthSvc->>Postgres: SELECT token (valid, not expired, not used)
-    AuthSvc->>AuthSvc: Hash new password
-    AuthSvc->>Postgres: UPDATE user password
-    AuthSvc->>Postgres: UPDATE token used_at
-    AuthSvc-->>Frontend: 204 No Content
-    Frontend->>User: "Password changed — please log in"
+    User->>Frontend: Click link, enter new password
+    Frontend->>Identity: POST /auth/reset-password {token, new_password}
+    Identity->>Postgres: SELECT token (valid, not expired, not used)
+    Identity->>Postgres: UPDATE user password; mark token used
+    Identity-->>Frontend: 204 No Content
 ```

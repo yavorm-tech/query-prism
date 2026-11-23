@@ -94,7 +94,7 @@ Exceeding limits returns `HTTP 429 Too Many Requests`.
 
 ## Quota Enforcement
 
-Quotas are enforced by the Billing Service before each metered action.
+Quotas are enforced in-process by the metering module (`app.metering.api`) before each metered action. Queries are *reserved* atomically before any work and released if no LLM call happens, so concurrent requests cannot overshoot the monthly limit.
 
 | Quota | Trigger | HTTP Error |
 |-------|---------|------------|
@@ -135,6 +135,19 @@ Admins and owners can filter the audit log by `team_id` and `event_type`.
 
 ---
 
-## Service-to-Service Security
+## Internal Boundaries
 
-Internal services (Billing, Notification) are **not exposed through the Nginx gateway**. They are only accessible within the Docker network (`query-prism-network`). Other services communicate with them via their internal hostnames.
+There is no service-to-service HTTP. All modules run in the one `api` process
+(plus the Celery `worker`) and call each other through their `api.py`.
+
+- Only the Nginx gateway is published. PostgreSQL, Neo4j and both Redis
+  instances have no host ports in production; `docker-compose.dev.yml` binds
+  them to `127.0.0.1` for local development only.
+- `/metrics` on `api` and `worker:9101` are reachable only inside the Docker
+  network; the gateway does not route them.
+- `SECRET_KEY`, `POSTGRES_PASSWORD` and `NEO4J_PASSWORD` have no defaults; the
+  API and worker refuse to start without a 32+ character `SECRET_KEY`.
+- Neo4j holds no tenant ids. Every graph result is re-filtered in PostgreSQL by
+  company, team membership and visibility before it is used.
+- Cross-tenant access is covered by integration tests
+  (`backend/tests/integration`).

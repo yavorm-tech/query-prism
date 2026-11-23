@@ -2,21 +2,28 @@
 
 ## PostgreSQL Schema
 
-### `companies`
+Tables live in one schema per module (`identity`, `workspace`, `knowledge`,
+`retrieval`, `metering`, `audit`). The database `search_path` lists all of them,
+so SQL uses unqualified table names. Each table is written only by its owning
+module (see `docs/architecture.md`).
+
+### `companies` (schema `identity`)
 
 The top-level tenant table. Every other resource belongs to a company.
+
+> The plan and usage columns below are **deprecated** since Alembic revision 0004:
+> the plan and counters now live in `metering.subscriptions` and these columns are
+> no longer maintained. They are kept for one release as a rollback path.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID PK | Unique identifier |
 | `name` | TEXT NOT NULL | Display name |
 | `slug` | TEXT UNIQUE | URL-safe identifier |
-| `plan` | TEXT | `starter`, `team`, `business`, `enterprise` |
-| `max_storage_mb` | INT | Storage quota from plan |
-| `max_users` | INT | User quota from plan (`-1` = unlimited) |
-| `max_teams` | INT | Team quota from plan (`-1` = unlimited) |
-| `queries_used_this_month` | INT | Rolling monthly counter |
-| `storage_used_bytes` | BIGINT | Running storage total |
+| `plan` | TEXT | *Deprecated* — see `subscriptions.plan` |
+| `max_storage_mb`, `max_users`, `max_teams` | INT | *Deprecated* — limits come from `plan_limits` |
+| `queries_used_this_month`, `queries_reset_at` | INT / TIMESTAMPTZ | *Deprecated* — see `subscriptions` |
+| `storage_used_bytes` | BIGINT | *Deprecated* — see `subscriptions` |
 | `created_at` | TIMESTAMPTZ | Creation timestamp |
 
 ---
@@ -118,8 +125,7 @@ Embedded text segments. The core unit of retrieval.
 | `chunk_index` | INT | Order within document |
 | `content` | TEXT | Raw text content |
 | `token_count` | INT | Token count (tiktoken) |
-| `embedding` | VECTOR(3072) | Full-precision OpenAI embedding |
-| `embedding_hv` | HALFVEC(3072) | Half-precision embedding (index efficiency) |
+| `embedding_hv` | HALFVEC(3072) | Half-precision OpenAI embedding, HNSW-indexed (cosine) |
 | `metadata` | JSONB | Page number, section, etc. |
 
 ---
@@ -195,18 +201,35 @@ Immutable event log for compliance.
 
 ### `plan_limits`
 
-Reference table mapping plan names to their limits and pricing.
+Reference table (schema `metering`) mapping plan names to their limits and pricing.
+`NULL` in a limit column means unlimited.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `plan` | TEXT PK | Plan identifier |
-| `max_queries` | INT | Monthly query quota (`-1` = unlimited) |
-| `max_storage_mb` | INT | Storage quota in MB (`-1` = unlimited) |
-| `max_teams` | INT | Team quota (`-1` = unlimited) |
-| `max_users` | INT | User quota (`-1` = unlimited) |
+| `max_queries` | INT | Monthly query quota |
+| `max_storage_mb` | INT | Storage quota in MB |
+| `max_teams` | INT | Team quota |
+| `max_users` | INT | User quota |
 | `llm_model` | TEXT | LLM model string for this plan |
 | `price_monthly` | NUMERIC | Monthly price in USD |
 | `price_yearly` | NUMERIC | Yearly price in USD (per month) |
+
+---
+
+### `subscriptions`
+
+Schema `metering`. One row per company: its plan and usage counters. Created by
+`metering.open_subscription` at sign-up; written only by metering.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `company_id` | UUID PK, FK → companies | Tenant |
+| `plan` | TEXT FK → plan_limits | Current plan (default `starter`) |
+| `queries_used_this_month` | INT | Monthly counter; reset by `reserve_query` when the month rolls over |
+| `queries_reset_at` | TIMESTAMPTZ | Start of the month the counter belongs to |
+| `storage_used_bytes` | BIGINT | Bytes of completed documents |
+| `created_at`, `updated_at` | TIMESTAMPTZ | Timestamps |
 
 ---
 
@@ -218,16 +241,21 @@ Neo4j stores the knowledge graph built from ingested documents.
 
 | Label | Properties | Description |
 |-------|-----------|-------------|
-| `Entity` | `name`, `type`, `document_id`, `company_id` | Named entity extracted by spaCy (person, org, location, etc.) |
-| `Chunk` | `chunk_id`, `document_id` | Reference to a PostgreSQL chunk |
+| `Document` | `id`, `filename`, `source_type` | Mirror of a PostgreSQL document |
+| `Chunk` | `id`, `document_id`, `chunk_index`, `content_preview` | Mirror of a PostgreSQL chunk (first 200 chars) |
+| `Entity` | `id`, `name`, `type`, `normalized`, `aliases` | Named entity extracted by GPT-4o-mini. `id` is a hash of type + normalized name, so the same entity merges across documents |
+
+The graph holds **no tenant data**. Retrieval gets chunk ids from Neo4j and
+applies company / team / visibility rules in PostgreSQL. Neo4j is derived from
+PostgreSQL and can be rebuilt with the `build_knowledge_graph_bulk` task.
 
 ### Relationship Types
 
 | Type | From → To | Description |
 |------|----------|-------------|
-| `RELATED_TO` | Entity → Entity | Relationship extracted between two entities |
-| `MENTIONED_IN` | Entity → Chunk | Entity appears in this chunk |
-| `BELONGS_TO` | Chunk → Document | Chunk's parent document |
+| `HAS_CHUNK` | Document → Chunk | Chunk's parent document |
+| `MENTIONS` | Chunk → Entity | Entity appears in this chunk |
+| `RELATED_TO` | Entity → Entity | LLM-extracted relation; properties `predicate`, `weight`, `chunk_ids` |
 
 ---
 

@@ -54,7 +54,7 @@ async def create_company(name: str) -> dict:
             """
             INSERT INTO companies (name, slug)
             VALUES ($1, $2)
-            RETURNING id, name, slug, plan, created_at
+            RETURNING id, name, slug, created_at
             """,
             name, slug,
         )
@@ -65,7 +65,7 @@ async def get_company(company_id: str) -> dict | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, name, slug, plan, max_users, max_teams FROM companies WHERE id = $1",
+            "SELECT id, name, slug FROM companies WHERE id = $1",
             company_id,
         )
     return dict(row) if row else None

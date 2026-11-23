@@ -1,9 +1,9 @@
 # Component Diagram
 
-> **Note (v2):** this diagram shows the pre-v2 microservices. The same responsibilities now live in modules of one API process (`backend/app/<context>`); see `docs/architecture.md` for the current structure. Flows are unchanged except that service-to-service HTTP calls are now in-process calls.
-
-
-High-level view of the services and how they interact.
+High-level view of the containers and the modules inside the API. Query-Prism
+is a **modular monolith**: one `api` process and one Celery `worker`, both built
+from `backend/`. Modules call each other in-process through their `api.py`;
+the only cross-process hop inside the system is API → `redis-broker` → worker.
 
 ```mermaid
 C4Component
@@ -17,122 +17,84 @@ C4Component
     }
 
     Container_Boundary(gateway, "Nginx Gateway :8000") {
-        Component(proxy, "Reverse Proxy", "Nginx", "Routes /auth, /ingest, /chat, /topics, /contact")
+        Component(proxy, "Reverse Proxy", "Nginx", "Routes every API path to api:8000")
     }
 
-    Container_Boundary(auth_svc, "Auth Service :8001") {
-        Component(auth_api, "Auth API", "FastAPI", "Register, login, teams, invites, audit")
-        Component(jwt, "JWT Handler", "python-jose", "Token issuance & verification")
-        Component(oauth, "OAuth Handler", "Google OAuth2", "Google sign-in flow")
+    Container_Boundary(api, "api :8000 (FastAPI modular monolith)") {
+        Component(retrieval, "retrieval", "/chat, /topics/{id}/questions", "Hybrid search, re-rank, LLM answers, answer cache, question history")
+        Component(knowledge, "knowledge", "/ingest, /topics/{id}/documents", "Upload, document status, delete; queues ingestion")
+        Component(workspace, "workspace", "/topics", "Topic CRUD and topic access checks")
+        Component(identity, "identity", "/auth, /auth/oauth", "Register, login, Google OAuth, teams, invites, JWT")
+        Component(metering, "metering", "/usage", "Plans, atomic query reservation, storage/team/user limits")
+        Component(notification, "notification", "/contact", "Transactional email")
+        Component(audit, "audit", "/audit", "Append-only audit trail")
+        Component(shared, "shared", "kernel", "Config, DB pools, security, rate limit, events, embedder, NER")
     }
 
-    Container_Boundary(ingest_svc, "Ingestion Service :8002") {
-        Component(ingest_api, "Ingest API", "FastAPI", "File upload, status, delete")
-        Component(celery_q, "Task Queue", "Celery + Redis", "Background job dispatch")
+    Container_Boundary(worker, "worker (Celery, same codebase)") {
+        Component(ingest_task, "ingest_document", "knowledge.tasks", "Load → chunk → embed → write chunks → mark complete")
+        Component(graph_task, "build_knowledge_graph", "knowledge.graph_tasks", "GPT-4o-mini NER + relations → Neo4j")
     }
 
-    Container_Boundary(worker, "Celery Worker") {
-        Component(loader, "File Loader", "pdfplumber, python-docx, whisper", "Extract text from files")
-        Component(chunker, "Chunker", "LlamaIndex SentenceSplitter", "Split text into chunks")
-        Component(embedder, "Embedder", "OpenAI text-embedding-3-large", "Generate 3072-dim vectors")
-        Component(ner, "NER + Relations", "spaCy", "Entity & relation extraction")
-        Component(graph_writer, "Graph Writer", "neo4j-driver", "Write to Neo4j")
-    }
-
-    Container_Boundary(chat_svc, "Chat Service :8003") {
-        Component(chat_api, "Chat API", "FastAPI", "Query, streaming SSE")
-        Component(retriever, "Retriever", "asyncpg + neo4j", "Hybrid vector + graph search")
-        Component(reranker, "Re-ranker", "Cohere API", "Re-rank retrieved chunks")
-        Component(llm, "LLM Client", "Anthropic / OpenAI SDK", "Generate answers")
-        Component(cache, "Query Cache", "Redis", "Cache query results")
-        Component(topics_svc, "Topics Service", "FastAPI", "CRUD for topic folders")
-    }
-
-    Container_Boundary(billing_svc, "Billing Service :8004") {
-        Component(billing_api, "Billing API", "FastAPI", "Quota enforcement, usage stats")
-    }
-
-    Container_Boundary(notif_svc, "Notification Service :8005") {
-        Component(email_svc, "Email Service", "smtplib + Postfix", "Transactional emails")
-    }
-
-    ContainerDb(postgres, "PostgreSQL :5434", "PostgreSQL 16 + pgvector", "Users, documents, chunks, history")
-    ContainerDb(neo4j, "Neo4j :7687", "Neo4j 5", "Knowledge graph")
-    ContainerDb(redis, "Redis :6380", "Redis 7", "Cache + Celery broker")
+    ContainerDb(postgres, "PostgreSQL 18 + pgvector", "schema per module", "identity, workspace, knowledge, retrieval, metering, audit")
+    ContainerDb(neo4j, "Neo4j 5.26", "Graph", "Document, Chunk, Entity nodes")
+    ContainerDb(redis, "redis", "Redis 7, LRU", "Answer cache, rate limits")
+    ContainerDb(broker, "redis-broker", "Redis 7, noeviction + AOF", "Celery queue 'ingestion'")
     ContainerDb(postfix, "Postfix", "SMTP relay", "Email delivery")
 
     Rel(user, spa, "Uses", "HTTPS")
     Rel(admin, spa, "Uses", "HTTPS")
     Rel(spa, proxy, "API requests", "HTTP/JSON, SSE")
+    Rel(proxy, retrieval, "All API paths", "HTTP to api:8000")
 
-    Rel(proxy, auth_api, "Routes /auth", "HTTP")
-    Rel(proxy, ingest_api, "Routes /ingest", "HTTP/multipart")
-    Rel(proxy, chat_api, "Routes /chat", "HTTP/SSE")
-    Rel(proxy, topics_svc, "Routes /topics", "HTTP")
-    Rel(proxy, email_svc, "Routes /contact", "HTTP")
+    Rel(retrieval, knowledge, "Reads documents/chunks", "SQL (allowlisted cross-read)")
+    Rel(retrieval, workspace, "require_topic_access", "in-process")
+    Rel(retrieval, metering, "reserve_query / release_query", "in-process")
+    Rel(knowledge, metering, "check_storage_limit", "in-process")
+    Rel(identity, metering, "open_subscription, limits", "in-process")
+    Rel(identity, notification, "Invite / reset emails", "in-process")
 
-    Rel(auth_api, postgres, "R/W users, teams, invites", "asyncpg")
-    Rel(auth_api, billing_api, "Check limits", "HTTP internal")
-    Rel(auth_api, email_svc, "Send emails", "HTTP internal")
+    Rel(knowledge, broker, "send_task ingest_document", "Redis")
+    Rel(broker, ingest_task, "Dispatch", "Redis")
+    Rel(ingest_task, graph_task, "send_task build_knowledge_graph", "Redis")
 
-    Rel(ingest_api, postgres, "Insert document metadata", "asyncpg")
-    Rel(ingest_api, billing_api, "Check storage limit", "HTTP internal")
-    Rel(ingest_api, celery_q, "Queue ingestion job", "Redis")
-
-    Rel(celery_q, worker, "Dispatch task", "Redis")
-    Rel(loader, chunker, "Pass text")
-    Rel(chunker, embedder, "Pass chunks")
-    Rel(embedder, postgres, "Write chunks + vectors", "asyncpg")
-    Rel(ner, graph_writer, "Pass entities")
-    Rel(graph_writer, neo4j, "Write graph", "Bolt")
-
-    Rel(chat_api, retriever, "Retrieve context")
-    Rel(retriever, postgres, "Vector search", "asyncpg + pgvector")
-    Rel(retriever, neo4j, "Graph search", "Bolt")
-    Rel(retriever, reranker, "Re-rank chunks", "Cohere HTTP")
-    Rel(chat_api, llm, "Generate answer", "Anthropic/OpenAI HTTP")
-    Rel(chat_api, cache, "Cache R/W", "Redis")
-    Rel(chat_api, billing_api, "Check & increment queries", "HTTP internal")
-
-    Rel(email_svc, postfix, "Send via SMTP", "SMTP :25")
+    Rel(ingest_task, postgres, "Write chunks + vectors", "asyncpg")
+    Rel(graph_task, neo4j, "MERGE graph", "Bolt")
+    Rel(retrieval, postgres, "Vector search (HNSW)", "asyncpg")
+    Rel(retrieval, neo4j, "Entity traversal", "Bolt")
+    Rel(retrieval, redis, "Answer cache", "Redis")
+    Rel(notification, postfix, "Send via SMTP", "SMTP :25")
 ```
 
 ---
 
-## Simplified Service Interaction Map
+## Simplified Interaction Map
 
 ```
-                    ┌──────────┐
-                    │  React   │
-                    │ Frontend │
-                    └────┬─────┘
-                         │ HTTPS
-                    ┌────▼─────┐
-                    │  Nginx   │
-                    │ :8000    │
-                    └──┬──┬──┬─┘
-                       │  │  │
-          ┌────────────┘  │  └──────────────┐
-          │               │                 │
-    ┌─────▼────┐    ┌──────▼──────┐   ┌─────▼──────┐
-    │   Auth   │    │  Ingestion  │   │    Chat    │
-    │  :8001   │    │   :8002     │   │   :8003    │
-    └──┬───────┘    └──────┬──────┘   └──────┬─────┘
-       │                   │                  │
-       │           ┌───────▼──────┐           │
-       │           │ Celery Worker│           │
-       │           └───────┬──────┘           │
-       │                   │                  │
-       └─────────┬──────────┘──────────────────┘
-                 │                  │
-    ┌────────────▼──┐    ┌──────────▼────────┐
-    │  Billing Svc  │    │  Notification Svc │
-    │    :8004      │    │      :8005        │
-    │  (internal)   │    │    (+ /contact)   │
-    └───────────────┘    └───────────────────┘
-                 │
-    ┌────────────▼────────────────────────────────┐
-    │         Data Layer                           │
-    │  PostgreSQL :5434  Neo4j :7687  Redis :6380  │
-    └─────────────────────────────────────────────┘
+                 ┌──────────────┐
+                 │ React (SPA)  │
+                 └──────┬───────┘
+                        │ HTTPS
+                 ┌──────▼───────┐
+                 │ Nginx :8000  │   every API path → api:8000
+                 └──────┬───────┘
+                        │
+   ┌────────────────────▼──────────────── api ───────────────────────────┐
+   │  retrieval ──► knowledge ──► workspace ──► identity                 │
+   │      │             │              │            │                    │
+   │      └─────────────┴──────────────┴────────────┴──► metering        │
+   │                                                     notification    │
+   │                                                     audit           │
+   │  shared (config, db, security, events, AI clients)                  │
+   └───────────────┬─────────────────────────────────────────────────────┘
+                   │ send_task
+           ┌───────▼────────┐        ┌──────────────────────────┐
+           │  redis-broker  │──────► │  worker (Celery)         │
+           └────────────────┘        │  ingest_document         │
+                                     │  build_knowledge_graph   │
+                                     └──────────────────────────┘
+                   │                               │
+   ┌───────────────▼───────────────────────────────▼──────────────┐
+   │  PostgreSQL (schema per module)   Neo4j   redis (cache)       │
+   └───────────────────────────────────────────────────────────────┘
 ```

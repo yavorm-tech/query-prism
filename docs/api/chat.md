@@ -1,4 +1,4 @@
-# Chat Service API
+# Chat API (retrieval and workspace modules)
 
 **Base URL:** `/chat` and `/topics`  
 **Served by:** `api` (port 8000, via the gateway)  
@@ -327,34 +327,38 @@ Authorization: Bearer <token>
 User Query
     │
     ▼
-1. Encode query → 3072-dim vector (OpenAI)
-    │
-    ├── pgvector cosine search
-    │     SELECT chunks WHERE company_id=X [AND team_id=Y] [AND topic_id=Z]
-    │     ORDER BY embedding <=> query_vec LIMIT 20
-    │
-    └── Neo4j graph traversal
-          Extract entities from query (spaCy)
-          MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
-          WHERE e.name IN [entities] AND e.company_id = X
+0. metering.reserve_query (atomic; 429 when the monthly quota is used up)
+   Redis answer cache lookup → hit: release the reservation and return
     │
     ▼
-2. Merge & deduplicate results
+1. Embed query → 3072-dim vector (OpenAI)
+    │
+    ├── Vector search (PostgreSQL, HNSW on chunks.embedding_hv)
+    │     tenant filter: own teams OR company-visible docs; [team_id] [topic_id] [source_type]
+    │     ORDER BY embedding_hv <=> query_vec LIMIT 20
+    │
+    └── Graph search
+          Extract entities from query (GPT-4o-mini)
+          Neo4j: (Chunk)-[:MENTIONS]->(Entity), up to 2 RELATED_TO hops, over-fetch 200 chunk ids
+          PostgreSQL: apply the same tenant filter to those ids, LIMIT 20
+          (graph failure → answer from vector results only)
     │
     ▼
-3. Cohere re-ranking (top 20 → top 5)
+2. Cohere re-ranking (rerank-v3.5, all candidates → top 8;
+   falls back to similarity order if Cohere is unavailable)
     │
     ▼
-4. Assemble context string (chunk contents)
+3. Assemble context string (≤ 6,000 tokens)
     │
     ▼
-5. LLM call (Claude or GPT based on plan)
+4. LLM call — model comes from the company's plan
     │
     ├── Streaming → SSE token stream
     └── Non-streaming → full answer
     │
     ▼
-6. Store in query_history
-7. Increment billing counter
-8. Cache in Redis (TTL: configurable)
+5. Store in query_history
+6. Cache in Redis (TTL 1 h; dropped when a visible document is ingested or deleted)
+
+No context found, or an error before the LLM call → the reserved query is released.
 ```

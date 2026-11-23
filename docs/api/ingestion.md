@@ -1,4 +1,4 @@
-# Ingestion Service API
+# Ingestion API (knowledge module)
 
 **Base URL:** `/ingest`  
 **Served by:** `api` (port 8000, via the gateway)  
@@ -157,34 +157,36 @@ Authorization: Bearer <token>
 When a document is uploaded, the following pipeline executes asynchronously via Celery:
 
 ```
-Celery Task: ingest_document(document_id, file_path, source_type)
+Celery task: app.worker.ingest_document(document_id, file_path, source_type)
+(queue "ingestion" on redis-broker; max 3 retries, 30 s apart; file kept until the last attempt)
 │
-├── 1. Load file
-│     ├── PDF       → pdfplumber (text + page metadata)
-│     ├── DOCX      → python-docx
-│     ├── TXT/MD    → raw read
-│     ├── Image     → pytesseract OCR
-│     ├── Video/Audio → faster-whisper transcription
-│     └── CSV       → pandas → text representation
+├── 1. UPDATE documents SET status='processing'
 │
-├── 2. Chunk text
-│     └── LlamaIndex SentenceSplitter
-│           chunk_size=512 tokens, chunk_overlap=64 tokens
+├── 2. Load file  (app/knowledge/loaders.py)
+│     ├── PDF          → pdfplumber (text + page metadata)
+│     ├── DOCX         → python-docx
+│     ├── TXT/MD       → raw read
+│     ├── Image        → pytesseract OCR
+│     ├── Video/Audio  → faster-whisper transcription
+│     └── CSV          → csv.DictReader, one sentence per row
 │
-├── 3. Embed chunks (batch)
-│     └── OpenAI text-embedding-3-large → 3072-dim float32 vectors
+├── 3. Chunk text
+│     └── LlamaIndex SentenceSplitter (chunk_size=512, chunk_overlap=50 tokens)
 │
-├── 4. Write to PostgreSQL
-│     └── INSERT into chunks (content, embedding, embedding_hv, metadata)
+├── 4. Embed chunks (batch)
+│     └── OpenAI text-embedding-3-large → 3072-dim vectors
 │
-├── 5. Named Entity Recognition
-│     └── spaCy en_core_web_sm → entities per chunk
+├── 5. Write to PostgreSQL (one transaction, safe to retry)
+│     └── DELETE old chunks for the document, INSERT chunks (content, embedding_hv halfvec, metadata)
 │
-├── 6. Relationship Extraction
-│     └── Co-occurrence + LLM-based extraction
+├── 6. metering.increment_storage(company_id, file_size)
+├── 7. UPDATE documents SET status='completed'
+├── 8. publish DocumentIngested → retrieval drops affected cached answers
 │
-├── 7. Write to Neo4j
-│     └── MERGE Entity nodes + RELATED_TO / MENTIONED_IN edges
-│
-└── 8. UPDATE documents SET status='completed'
+└── 9. send_task app.graph_worker.build_knowledge_graph(document_id)
+        ├── NER per chunk — GPT-4o-mini (app/shared/ai/ner.py)
+        ├── Relation extraction — LLM, only chunks with 2+ entities
+        └── Neo4j MERGE Document, Chunk, Entity nodes; HAS_CHUNK / MENTIONS / RELATED_TO edges
+
+On final failure: status='failed', error_message set, file removed.
 ```
