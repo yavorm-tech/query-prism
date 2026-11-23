@@ -13,7 +13,7 @@ graph TB
     end
 
     subgraph Host["Docker Host (Linux)"]
-        NginxSSL["Nginx SSL\n:80, :443\nCertbot auto-renew"]
+        Traefik["Traefik\n:80, :443\nLet's Encrypt, auto-renew"]
 
         subgraph Net["rag_net"]
             Nginx["Nginx Gateway\n:8000"]
@@ -29,9 +29,9 @@ graph TB
         end
     end
 
-    Browser -->|HTTPS :443| NginxSSL
-    NginxSSL -->|HTTP :8000| Nginx
-    NginxSSL -->|/*| ReactApp
+    Browser -->|HTTPS :443| Traefik
+    Traefik -->|API paths, HTTP :8000| Nginx
+    Traefik -->|everything else| ReactApp
     Nginx -->|all API paths| API
 
     Migrate -->|DDL| Postgres
@@ -58,10 +58,10 @@ graph TB
 
 | Container | Internal Port | Host Port | Accessible From |
 |-----------|--------------|-----------|----------------|
-| nginx-gateway | 80 | 8000 | Public (via SSL proxy) |
+| gateway (nginx) | 8000 | 127.0.0.1:8000 | Traefik + this host only |
 | api | 8000 | — | Internal + Gateway |
 | worker | 9101 (metrics) | — | Internal |
-| nginx-ssl | 80/443 | 80/443 | Public |
+| traefik | 80/443 | 80/443 | Public (80 only redirects to HTTPS and answers ACME challenges) |
 
 ---
 
@@ -74,8 +74,7 @@ graph TB
 | `redis_data` | `/data` | Answer cache snapshot (RDB) |
 | `redis_broker_data` | `/data` | Celery broker persistence (AOF) |
 | `uploads` | `/app/uploads` | Uploaded files awaiting ingestion when `STORAGE_BACKEND=local` (shared between api and worker; deleted after ingestion). With `STORAGE_BACKEND=s3` files go to the bucket instead and api/worker can run on separate hosts |
-| `certbot_conf` | `/etc/letsencrypt` | SSL certificate store |
-| `certbot_www` | `/var/www/certbot` | ACME challenge files |
+| `traefik_letsencrypt` | `/letsencrypt` | `acme.json`: Let's Encrypt account and certificates (Traefik renews them ~30 days before expiry) |
 
 ---
 
@@ -101,7 +100,7 @@ worker → same datastores; consumes redis-broker queue "ingestion"
 - [ ] Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`
 - [ ] Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL`
 - [ ] Configure `SMTP_*` environment variables for email delivery
-- [ ] Configure Certbot with your domain for HTTPS
+- [ ] Set `DOMAIN` (and optionally `ACME_EMAIL`), point its DNS A record at the host, start with `--profile ssl`: Traefik gets the certificate on first start
 - [ ] Set `DATABASE_URL` with production credentials
 - [ ] Set `NEO4J_PASSWORD` to a strong password
 - [ ] Set `APP_DB_PASSWORD`: `api` and `worker` connect as the least-privilege `qp_app` role (row-level security applies), `migrate` as the owner

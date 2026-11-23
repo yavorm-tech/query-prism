@@ -57,7 +57,7 @@
 |-----------|-----------|
 | Containers | Docker + Docker Compose |
 | Gateway | Nginx (reverse proxy, SSL termination) |
-| SSL | Certbot + Let's Encrypt |
+| TLS | Traefik (Let's Encrypt, automatic issue and renewal) |
 | Mail | Postfix SMTP relay |
 
 ---
@@ -70,7 +70,7 @@ Until v2 it was five HTTP microservices sharing one database; see
 `docs/architecture-document.html` for the review that led to the change.
 
 ```
-        Browser ──► Nginx edge (TLS) ──► Nginx gateway :8000 ──► api :8000
+        Browser ──► Traefik (TLS) ──► Nginx gateway :8000 ──► api :8000
                                                                    │
    ┌───────────────────────────── backend/app ─────────────────────┴──────────┐
    │  retrieval   /chat, /topics/{id}/questions     answers, question history │

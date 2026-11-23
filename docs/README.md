@@ -50,13 +50,23 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 (`openssl rand -hex 32`); the API and worker refuse to start otherwise.
 `POSTGRES_PASSWORD` and `NEO4J_PASSWORD` have no defaults.
 
+Deploying to a server: `.claude/skills/deploy/SKILL.md` is the step-by-step procedure
+(Claude Code on the server runs it as `/deploy`; a person can follow it too), and
+`procedures/deploy-check.sh preflight|verify` checks the host, `.env`, DNS, firewall,
+containers, HTTPS and backups without printing secrets.
+
+Production with HTTPS: set `DOMAIN` (its DNS must point at the host) and start with
+`docker compose --profile ssl up -d`. Traefik obtains the certificate on first start
+and renews it automatically; there is no separate certificate step.
+
 ---
 
 ## Containers and Ports
 
 | Container | Port | Description |
 |---------|------|-------------|
-| Nginx Gateway | 127.0.0.1:8000 | API entry point behind the TLS proxy, routes everything to `api`; loopback-only on the host |
+| Traefik | 80, 443 | Public entry (profile `ssl`): TLS with automatic Let's Encrypt certificates for `DOMAIN`; API paths → gateway, the rest → frontend |
+| Nginx Gateway | 127.0.0.1:8000 | API entry point behind Traefik, routes everything to `api`; loopback-only on the host |
 | api | 8000 (internal) | All HTTP endpoints; `/metrics` internal only |
 | worker | 9101 (internal) | Celery ingestion worker; Prometheus metrics |
 | migrate | — | Runs `alembic upgrade head` once per deploy |

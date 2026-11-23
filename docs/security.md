@@ -159,8 +159,12 @@ Admins and owners can filter the audit log by `team_id` and `event_type`.
 There is no service-to-service HTTP. All modules run in the one `api` process
 (plus the Celery `worker`) and call each other through their `api.py`.
 
-- Only the TLS proxy (80/443) is public. The Nginx gateway's port 8000 is bound to
-  `127.0.0.1` (local dev and smoke tests), so the API can't be reached around TLS. PostgreSQL, Neo4j and both Redis
+- Only Traefik (80/443) is public; port 80 only redirects to HTTPS and answers ACME
+  challenges. The Nginx gateway's port 8000 is bound to `127.0.0.1` (local dev and
+  smoke tests), so the API can't be reached around TLS. Traefik has no Docker socket
+  (routes come from `traefik/dynamic.yml`), overwrites client-sent `X-Real-IP` /
+  `X-Forwarded-For`, and strips look-alike headers (`X_Real_IP`); the gateway trusts
+  `X-Real-IP` only from the Docker network, so per-IP rate limits see the visitor. PostgreSQL, Neo4j and both Redis
   instances have no host ports in production; `docker-compose.dev.yml` binds
   them to `127.0.0.1` for local development only.
 - `/metrics` on `api` and `worker:9101` are reachable only inside the Docker

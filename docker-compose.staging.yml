@@ -57,8 +57,8 @@ services:
     ports: !override
       - "127.0.0.1:${STAGING_API_PORT:-18000}:8000"
 
-  # The frontend proxies /api to the staging gateway; serve it directly instead
-  # of through the production TLS proxies.
+  # The frontend proxies API paths to the staging gateway; serve it directly
+  # instead of through production's Traefik.
   frontend:
     image: query-prism-frontend:staging
     container_name: stg_frontend
@@ -66,14 +66,8 @@ services:
     ports:
       - "127.0.0.1:${STAGING_HTTP_PORT:-18080}:80"
 
-  ssl-proxy-http:
-    container_name: stg_ssl_proxy_http
-    profiles: !override ["never"]
-  ssl-proxy:
-    container_name: stg_ssl_proxy
-    profiles: !override ["never"]
-  certbot:
-    container_name: stg_certbot
+  traefik:
+    container_name: stg_traefik
     profiles: !override ["never"]
 
   prometheus:

@@ -1,0 +1,58 @@
+# Traefik routing (file provider; the static settings are the command flags of
+# the traefik service in docker-compose.yml). {{ env "DOMAIN" }} comes from .env.
+#
+# Same split as the old nginx ssl-proxy: API paths go to the gateway, the rest to
+# the React frontend. Certificates are issued and renewed by Traefik itself
+# (Let's Encrypt HTTP challenge) and picked up without a restart.
+http:
+  routers:
+    api:
+      # One line: Traefik's rule parser doesn't accept newlines.
+      rule: "Host(`{{ env "DOMAIN" }}`) && (PathPrefix(`/auth/`) || PathPrefix(`/ingest`) || Path(`/chat`) || PathPrefix(`/chat/`) || PathPrefix(`/usage`) || PathPrefix(`/contact/`) || PathPrefix(`/audit`) || Path(`/health`))"
+      entryPoints: [websecure]
+      service: gateway
+      middlewares: [security-headers]
+      priority: 100
+      tls:
+        certResolver: letsencrypt
+
+    # /topics is both an API prefix and a frontend route: API calls carry a
+    # bearer token, page navigation doesn't.
+    api-topics:
+      rule: Host(`{{ env "DOMAIN" }}`) && PathPrefix(`/topics`) && HeaderRegexp(`Authorization`, `.+`)
+      entryPoints: [websecure]
+      service: gateway
+      middlewares: [security-headers]
+      priority: 100
+      tls:
+        certResolver: letsencrypt
+
+    frontend:
+      rule: Host(`{{ env "DOMAIN" }}`)
+      entryPoints: [websecure]
+      service: frontend
+      middlewares: [security-headers]
+      priority: 1
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    gateway:
+      loadBalancer:
+        servers:
+          - url: http://gateway:8000
+    frontend:
+      loadBalancer:
+        servers:
+          - url: http://frontend:80
+
+  middlewares:
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12

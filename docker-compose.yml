@@ -224,7 +224,7 @@ services:
       - rag_net
   # ─────────────────────────────────────────────
   # Nginx API Gateway — port 8000
-  # Browsers reach it through ssl-proxy / frontend on the Docker network. The
+  # Browsers reach it through traefik / frontend on the Docker network. The
   # host port is loopback-only (local Vite dev, smoke tests): exposing it on all
   # interfaces would let anyone bypass TLS and the edge proxy.
   # ─────────────────────────────────────────────
@@ -244,7 +244,7 @@ services:
       - rag_net
 
   # ─────────────────────────────────────────────
-  # React (Vite) frontend — internal only, accessed via ssl-proxy or ssl-proxy-http
+  # React (Vite) frontend — internal only, served through traefik
   # ─────────────────────────────────────────────
   frontend:
     build:
@@ -254,7 +254,7 @@ services:
         VITE_API_URL: ${VITE_API_URL:-}
     container_name: rag_frontend
     restart: unless-stopped
-    profiles: ["http", "ssl"]
+    profiles: ["ssl"]
     volumes:
       - ./gateway/frontend-react.conf:/etc/nginx/nginx.conf:ro
     mem_limit: 512m
@@ -264,41 +264,50 @@ services:
       - rag_net
 
   # ─────────────────────────────────────────────
-  # Nginx HTTP proxy — port 80 only (dev / cert bootstrap)
+  # Traefik — the only public service: ports 80 + 443 (profile "ssl")
+  # Issues and renews Let's Encrypt certificates for DOMAIN on its own and
+  # reloads them without a restart; routes API paths to the gateway and the
+  # rest to the frontend (traefik/dynamic.yml). No Docker socket is mounted.
   # ─────────────────────────────────────────────
-  ssl-proxy-http:
-    image: nginx:1.30.7-alpine
-    container_name: rag_ssl_proxy_http
-    restart: unless-stopped
-    profiles: ["http"]
-    ports:
-      - "80:80"
-    volumes:
-      - ./gateway/ssl-proxy-http.conf:/etc/nginx/nginx.conf:ro
-      - ./certbot_www:/var/www/certbot:ro
-    mem_limit: 128m
-    depends_on:
-      - gateway
-      - frontend
-    networks:
-      - rag_net
-
-  # ─────────────────────────────────────────────
-  # Nginx SSL proxy — ports 80 + 443
-  # ─────────────────────────────────────────────
-  ssl-proxy:
-    image: nginx:1.30.7-alpine
-    container_name: rag_ssl_proxy
+  traefik:
+    image: traefik:v3.7.19
+    container_name: rag_traefik
     restart: unless-stopped
     profiles: ["ssl"]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        [ -n "$$DOMAIN" ] || { echo "Set DOMAIN in .env (e.g. queryprism.online)" >&2; exit 1; } &&
+        exec traefik
+        --global.checknewversion=false --global.sendanonymoususage=false
+        --global.aliasheadersstrategy=delete
+        --log.level=INFO --accesslog=true
+        --ping=true
+        --providers.file.filename=/etc/traefik/dynamic.yml --providers.file.watch=true
+        --entrypoints.web.address=:80
+        --entrypoints.web.http.redirections.entrypoint.to=websecure
+        --entrypoints.web.http.redirections.entrypoint.scheme=https
+        --entrypoints.websecure.address=:443
+        --entrypoints.websecure.transport.respondingtimeouts.readtimeout=0
+        --entrypoints.websecure.transport.respondingtimeouts.idletimeout=360s
+        --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-}
+        --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+        --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+        --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./gateway/ssl-proxy.conf:/etc/nginx/nginx.conf:ro
-      - ./certbot_www:/var/www/certbot:ro
-      - ./certbot_conf:/etc/letsencrypt:ro
-    mem_limit: 128m
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - traefik_letsencrypt:/letsencrypt
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 256m
     depends_on:
       - gateway
       - frontend
@@ -372,19 +381,6 @@ services:
     networks:
       - rag_net
 
-  # ─────────────────────────────────────────────
-  # Certbot — auto-renewal every 12 h
-  # ─────────────────────────────────────────────
-  certbot:
-    image: certbot/certbot:v5.10.0
-    container_name: rag_certbot
-    restart: unless-stopped
-    profiles: ["ssl"]
-    volumes:
-      - ./certbot_www:/var/www/certbot
-      - ./certbot_conf:/etc/letsencrypt
-    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
-
 volumes:
   postgres_data:
   neo4j_data:
@@ -395,6 +391,7 @@ volumes:
   uploads:          # upload storage when STORAGE_BACKEND=local (api + worker share it)
   prometheus_data:
   alertmanager_data:
+  traefik_letsencrypt:   # acme.json: Traefik's certificates and ACME account
 
 networks:
   rag_net:
