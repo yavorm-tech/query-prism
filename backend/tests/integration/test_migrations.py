@@ -1,4 +1,4 @@
-"""The migration chain must apply cleanly on top of init.sql and round-trip."""
+"""The migration chain must build an empty database from the baseline and round-trip."""
 import os
 import subprocess
 import sys
@@ -36,3 +36,22 @@ async def test_downgrade_and_upgrade_round_trip():
     assert (await _schemas_of(["users", "chunks"])) == {"users": "public", "chunks": "public"}
     _alembic("upgrade", "head")
     assert (await _schemas_of(["users", "subscriptions"])) == {"users": "identity", "subscriptions": "metering"}
+
+
+async def _company_columns() -> set[str]:
+    conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+    try:
+        rows = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'companies'"
+        )
+    finally:
+        await conn.close()
+    return {r["column_name"] for r in rows}
+
+
+async def test_deprecated_company_columns_are_dropped_and_restored_on_downgrade():
+    assert "plan" not in await _company_columns()
+    _alembic("downgrade", "0004")
+    assert {"plan", "storage_used_bytes", "max_users"} <= await _company_columns()
+    _alembic("upgrade", "head")
+    assert "plan" not in await _company_columns()

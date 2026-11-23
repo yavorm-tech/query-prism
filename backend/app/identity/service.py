@@ -314,13 +314,16 @@ async def list_invites_for_company(company_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+INVITE_EXPIRY_HOURS = 24
+
+
 async def create_invite(
     company_id: str,
     team_id: str,
     email: str,
     invited_by: str,
     role: str = "member",
-    expires_hours: int = 24,
+    expires_hours: int = INVITE_EXPIRY_HOURS,
 ) -> dict:
     pool = await get_pool()
     token = secrets.token_urlsafe(32)
@@ -403,7 +406,8 @@ async def get_reset_token(token: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def consume_reset_token(token: str, new_password: str) -> bool:
+async def consume_reset_token(token: str, new_password: str) -> str | None:
+    """Set the new password; returns the user id, or None if the token is invalid."""
     hashed = hash_password(new_password)
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -416,12 +420,12 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
             token,
         )
         if not row:
-            return False
+            return None
         await conn.execute(
             "UPDATE users SET password = $1 WHERE id = $2",
             hashed, str(row["user_id"]),
         )
-    return True
+    return str(row["user_id"])
 
 
 # ── Avatar ────────────────────────────────────────────────────────────────────

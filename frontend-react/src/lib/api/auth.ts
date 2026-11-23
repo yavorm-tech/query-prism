@@ -5,6 +5,7 @@ export const register = (b: { company_name: string; username: string; email: str
   api.post<{ access_token: string }>("/auth/register", b).then((r) => r.data);
 export const login = (b: { email: string; password: string }) =>
   api.post<{ access_token: string }>("/auth/login", b).then((r) => r.data);
+export const logout = () => api.post("/auth/logout").then(() => {});
 export const getMe = () => api.get<User>("/auth/me").then((r) => r.data);
 export const forgotPassword = (email: string) => api.post("/auth/forgot-password", { email }).then(() => {});
 export const resetPassword = (b: { token: string; new_password: string }) =>

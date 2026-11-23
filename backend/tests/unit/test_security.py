@@ -94,3 +94,20 @@ def test_exception_logs_never_include_frame_locals(capsys):
     assert record["exception"][0]["exc_value"] == "boom"
     assert frames and all("locals" not in f for f in frames)
     assert "person@example.test" not in json.dumps(record)
+
+
+def test_cors_origins_are_explicit():
+    from app.shared.config import Settings
+    prod = Settings(api_env="production", frontend_url="https://app.example", app_url="https://app.example/")
+    assert prod.cors_allow_origins == ["https://app.example"]
+    dev = Settings(api_env="development", frontend_url="http://localhost", app_url="http://localhost:3001")
+    assert "http://localhost:5173" in dev.cors_allow_origins and "*" not in dev.cors_allow_origins
+    custom = Settings(cors_origins="https://a.example, https://b.example/")
+    assert custom.cors_allow_origins == ["https://a.example", "https://b.example"]
+
+
+def test_refresh_cookie_secure_follows_frontend_scheme():
+    from app.shared.config import Settings
+    assert Settings(frontend_url="https://app.example").refresh_cookie_is_secure
+    assert not Settings(frontend_url="http://localhost").refresh_cookie_is_secure
+    assert Settings(frontend_url="http://localhost", refresh_cookie_secure=True).refresh_cookie_is_secure

@@ -19,3 +19,4 @@ structlog==24.4.0
 prometheus-client==0.21.0
 alembic==1.13.3
 SQLAlchemy[asyncio]==2.0.35
+boto3==1.35.36              # S3-compatible upload storage (STORAGE_BACKEND=s3)

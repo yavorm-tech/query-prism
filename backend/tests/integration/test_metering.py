@@ -53,7 +53,7 @@ async def test_month_rollover_happens_inside_the_reserve(register):
             "UPDATE subscriptions SET queries_reset_at = date_trunc('month', now()) - interval '1 month' WHERE company_id = $1",
             co["company_id"],
         )
-    assert await metering.reserve_query(co["company_id"]) == "gpt-4o-mini"
+    assert await metering.reserve_query(co["company_id"]) == "basic"
     assert await _used(co["company_id"]) == 1
 
 

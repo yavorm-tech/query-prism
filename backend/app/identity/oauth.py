@@ -2,14 +2,15 @@ from datetime import timedelta
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app.shared.config import get_settings
 from app.shared.security import decode_token
-from app.identity.router import onboard_company
-from app.identity.tokens import build_token_payload, create_access_token
+from app.identity.router import _token_response, onboard_company
+from app.identity import sessions
+from app.identity.tokens import create_access_token, issue_session, set_refresh_cookie
 from app.identity.service import (
     create_oauth_user, create_company, create_team,
     add_team_member, set_default_team,
@@ -80,9 +81,11 @@ async def google_callback(
     if user:
         if not user.get("is_active"):
             return RedirectResponse(f"{s.frontend_url}/login?error=account_inactive")
-        payload = await build_token_payload(user)
-        token   = create_access_token(payload)
-        return RedirectResponse(f"{s.frontend_url}/login?token={token}")
+        # The session travels in the httpOnly refresh cookie, never in the URL;
+        # the login page exchanges it for an access token via POST /auth/refresh.
+        redirect = RedirectResponse(f"{s.frontend_url}/login?oauth=success")
+        set_refresh_cookie(redirect, await sessions.start_session(str(user["id"])))
+        return redirect
 
     # New user — issue a short-lived pending token
     pending = create_access_token(
@@ -104,7 +107,7 @@ class OAuthCompleteRequest(BaseModel):
 
 
 @router.post("/complete")
-async def complete_oauth(request: OAuthCompleteRequest):
+async def complete_oauth(request: OAuthCompleteRequest, response: Response):
     try:
         payload = decode_token(request.pending_token)
     except Exception:
@@ -133,7 +136,5 @@ async def complete_oauth(request: OAuthCompleteRequest):
     await onboard_company(str(company["id"]), str(team["id"]), str(user["id"]))
 
     user["default_team_id"] = team["id"]
-    token_payload = await build_token_payload(user)
-    token         = create_access_token(token_payload)
-
-    return {"access_token": token, "token_type": "bearer"}
+    token = await issue_session(user, response)
+    return _token_response(token)

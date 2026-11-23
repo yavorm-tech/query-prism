@@ -1,12 +1,11 @@
-"""LLM service for chat. The model per company comes from billing (reserve_query)."""
-import logging
+"""Answer generation. The tier per company comes from metering (reserve_query);
+which provider and model serve a tier is decided by app.shared.ai.llm."""
 from typing import AsyncGenerator
-from app.shared.config import get_settings
 
-settings = get_settings()
-logger = logging.getLogger(__name__)
+from app.shared.ai import llm
+from app.shared.ai.llm import AnswerTier
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_TIER = AnswerTier.PREMIUM
 
 SYSTEM_PROMPT = """You are a helpful assistant that answers questions based on the provided context.
 
@@ -18,79 +17,15 @@ Rules:
 - Do not make up information not present in the context"""
 
 
-def _format_context(context: str, sources: list[dict]) -> str:
-    seen = set()
-    for chunk in sources:
-        doc_name = chunk.get("original_name") or chunk.get("filename", "Unknown")
-        seen.add(doc_name)
-    return f"Context (from {len(seen)} document(s)):\n{context}"
+def _user_message(query: str, context: str, sources: list[dict]) -> str:
+    docs = {chunk.get("original_name") or chunk.get("filename", "Unknown") for chunk in sources}
+    return f"Context (from {len(docs)} document(s)):\n{context}\n\nQuestion: {query}"
 
 
-async def generate_answer(query: str, context: str, sources: list[dict], model: str = DEFAULT_MODEL) -> str:
-    if model.startswith("gpt-"):
-        return await _openai_generate(query, context, sources, model)
-    return await _claude_generate(query, context, sources, model)
+async def generate_answer(query: str, context: str, sources: list[dict], tier: str = DEFAULT_TIER) -> str:
+    return await llm.complete(tier, SYSTEM_PROMPT, _user_message(query, context, sources))
 
 
-async def stream_answer(query: str, context: str, sources: list[dict], model: str = DEFAULT_MODEL) -> AsyncGenerator[str, None]:
-    if model.startswith("gpt-"):
-        async for chunk in _openai_stream(query, context, sources, model):
-            yield chunk
-    else:
-        async for chunk in _claude_stream(query, context, sources, model):
-            yield chunk
-
-
-async def _claude_generate(query: str, context: str, sources: list[dict], model: str) -> str:
-    import anthropic
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    formatted = _format_context(context, sources)
-    message = await client.messages.create(
-        model=model, max_tokens=1024, system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"{formatted}\n\nQuestion: {query}"}],
-    )
-    return message.content[0].text
-
-
-async def _claude_stream(query: str, context: str, sources: list[dict], model: str) -> AsyncGenerator[str, None]:
-    import anthropic
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    formatted = _format_context(context, sources)
-    async with client.messages.stream(
-        model=model, max_tokens=1024, system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"{formatted}\n\nQuestion: {query}"}],
-    ) as stream:
-        async for text in stream.text_stream:
-            yield text
-
-
-async def _openai_generate(query: str, context: str, sources: list[dict], model: str) -> str:
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-    formatted = _format_context(context, sources)
-    response = await client.chat.completions.create(
-        model=model, max_tokens=1024,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{formatted}\n\nQuestion: {query}"},
-        ],
-    )
-    return response.choices[0].message.content or ""
-
-
-async def _openai_stream(query: str, context: str, sources: list[dict], model: str) -> AsyncGenerator[str, None]:
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-    formatted = _format_context(context, sources)
-    stream = await client.chat.completions.create(
-        model=model, max_tokens=1024, stream=True,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{formatted}\n\nQuestion: {query}"},
-        ],
-    )
-    async for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield delta
-
+async def stream_answer(query: str, context: str, sources: list[dict], tier: str = DEFAULT_TIER) -> AsyncGenerator[str, None]:
+    async for text in llm.stream(tier, SYSTEM_PROMPT, _user_message(query, context, sources)):
+        yield text

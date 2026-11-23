@@ -2,11 +2,13 @@
 
 ## Authentication
 
-### JWT Tokens
-- Issued on successful login or registration
-- Algorithm: HS256 (HMAC-SHA256)
-- Expiry: 7 days (configurable via `SECRET_KEY`)
-- Payload claims: `sub` (user_id), `username`, `email`, `company_id`, `team_ids`, `role`, `default_team_id`
+### Access tokens and sessions (ADR-009)
+- Access token: HS256 JWT signed with `SECRET_KEY`, valid `ACCESS_TOKEN_MINUTES` (default **15 minutes**)
+- Claims: `type: "access"`, `sub` (user_id), `username`, `email`, `company_id`, `team_ids`, `role`, `default_team_id`. Only `type: "access"` tokens authenticate requests; the OAuth `oauth_pending` token and tokens issued before this change are rejected, so everyone signs in once after the upgrade.
+- Session: opaque refresh token in an `HttpOnly`, `SameSite=Strict`, `Path=/auth` cookie (`Secure` on https), valid `REFRESH_TOKEN_DAYS` (default 30). Stored only as a SHA-256 hash in `identity.refresh_tokens`.
+- Rotation: every refresh issues a new token. Reusing a spent token more than 30 s later revokes the whole session (multi-tab refreshes inside 30 s are allowed).
+- Revocation: logout ends the session; a password reset or a deactivated account ends all of the user's sessions. Team and role changes reach the user at their next refresh (≤ 15 min).
+- CORS allows only the configured origins (`FRONTEND_URL`, `APP_URL`, `CORS_ORIGINS`; plus local dev ports when `API_ENV=development`), never `*`, because requests carry credentials.
 
 ### Password Handling
 - Hashing: bcrypt (via `passlib`)
@@ -17,13 +19,13 @@
 1. Client redirected to `/auth/oauth/google`
 2. Google redirects to `/auth/oauth/google/callback` with authorization code
 3. Backend exchanges code for ID token, verifies claims
-4. Existing users: issue JWT and log in
+4. Existing users: set the refresh cookie and redirect to `/login?oauth=success`; the page exchanges the cookie for an access token
 5. New users: issue short-lived `pending_token` → frontend completes signup at `/auth/oauth/complete`
 
 ### Password Reset
-- 1-hour single-use tokens
-- Tokens stored hashed; raw token sent to email
-- `consumed_at` timestamp set on use (prevents replay)
+- 1-hour single-use tokens (`used_at` set on use; requesting a new one invalidates older ones)
+- Stored as-is in `password_reset_tokens` (not hashed)
+- A successful reset revokes all of the user's sessions
 
 ### Invite Tokens
 - 24-hour expiry

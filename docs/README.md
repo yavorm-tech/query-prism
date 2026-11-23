@@ -74,15 +74,29 @@ pip install -r requirements-dev.txt
 ruff check . && lint-imports              # lint + architecture contract
 python -m pytest                          # unit + architecture tests
 TEST_DATABASE_URL=postgresql://user:pass@localhost:5434/postgres \
-REDIS_URL=redis://localhost:6380/15 python -m pytest   # + integration tests
+REDIS_URL=redis://localhost:6380/15 python -m pytest   # + integration tests (builds qp_test with Alembic)
 alembic revision -m "describe change"     # new migration (raw SQL in upgrade())
 ```
 
 ## Plan Tiers
 
-| Plan | Queries/mo | Storage | Teams | Users | LLM |
+| Plan | Queries/mo | Storage | Teams | Users | Answer tier (default routes) |
 |------|-----------|---------|-------|-------|-----|
-| Starter (Free) | 50 | 50 MB | 1 | 3 | GPT-4o Mini |
-| Team | 1,000 | 5 GB | 5 | 25 | Claude Haiku |
-| Business | 5,000 | 20 GB | Unlimited | Unlimited | Claude Sonnet |
-| Enterprise | Unlimited | Unlimited | Unlimited | Unlimited | Claude Sonnet |
+| Starter (Free) | 50 | 50 MB | 1 | 3 | `basic`: GPT-4o Mini → Claude Haiku 4.5 |
+| Team | 1,000 | 5 GB | 5 | 25 | `standard`: Claude Haiku 4.5 → GPT-4o Mini |
+| Business | 5,000 | 20 GB | Unlimited | Unlimited | `premium`: Claude Sonnet 4.6 → GPT-4o |
+| Enterprise | Unlimited | Unlimited | Unlimited | Unlimited | `premium` |
+
+Routes are set with `LLM_TIER_BASIC`, `LLM_TIER_STANDARD` and `LLM_TIER_PREMIUM`
+(see `.env.example`); changing a model is a config change and a restart.
+
+## Backups
+
+```bash
+procedures/install-backup-cron.sh     # once, on the production host: nightly 02:30
+procedures/backup.sh                  # run now (dump → verify → copy to BACKUP_S3_URI)
+```
+
+Set `BACKUP_S3_URI` (and `AWS_*`, or `BACKUP_S3_ENDPOINT_URL` for an S3-compatible
+store) in `.env`; without it the dumps stay on the host. Alert when
+`backups/LAST_SUCCESS` is older than 26 hours.

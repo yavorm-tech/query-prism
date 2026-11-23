@@ -5,6 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.shared.config import get_settings
 
 ALGORITHM = "HS256"
+ACCESS_TOKEN_TYPE = "access"
 bearer_scheme = HTTPBearer(auto_error=True)
 
 
@@ -22,7 +23,15 @@ def decode_token(token: str) -> dict:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict:
-    return decode_token(credentials.credentials)
+    claims = decode_token(credentials.credentials)
+    # Only access tokens authenticate requests (not e.g. OAuth "oauth_pending" tokens).
+    if claims.get("type") != ACCESS_TOKEN_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return claims
 
 
 def can_access_team(user: dict, team_id: str) -> bool:

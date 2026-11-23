@@ -1,4 +1,5 @@
 import { getToken } from "../token";
+import { refreshAccessToken } from "./client";
 import type { SourceChunk, LimitError } from "./types";
 
 export interface StreamHandlers {
@@ -23,10 +24,18 @@ export function streamChat(p: StreamParams, h: StreamHandlers): () => void {
 
   (async () => {
     try {
-      const res = await fetch(`${base}/chat/stream?${qs}`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
-        signal: ctrl.signal,
-      });
+      const open = (token: string | null) =>
+        fetch(`${base}/chat/stream?${qs}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl.signal,
+        });
+      let res = await open(getToken());
+      if (res.status === 401) {
+        // Access token expired: refresh once and retry.
+        const token = await refreshAccessToken();
+        if (!token) { h.onError("Your session has expired. Please sign in again."); return; }
+        res = await open(token);
+      }
       if (res.status === 429 || res.status === 413) {
         const body = await res.json().catch(() => null);
         h.onLimit?.(body?.detail ?? undefined);

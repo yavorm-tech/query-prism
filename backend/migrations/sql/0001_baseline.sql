@@ -1,6 +1,10 @@
--- ===================================================G=========
--- RAG Chatbot — Multi-tenant schema
--- Company -> Teams -> Users -> Documents
+-- ============================================================
+-- Baseline schema (Alembic revision 0001)
+--
+-- Applied by 0001_baseline.py, only on an empty database. Tables are created in
+-- the public schema; revision 0003 moves them into one schema per module, and
+-- later revisions change them further. Do not edit: new schema changes are new
+-- Alembic revisions.
 -- ============================================================
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS vector;

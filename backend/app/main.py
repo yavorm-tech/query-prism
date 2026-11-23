@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from slowapi.errors import RateLimitExceeded
 
+from app.shared import events
 from app.shared.config import get_settings
 from app.shared.db import get_pool, close_pool
 from app.shared.neo4j import close_driver
@@ -74,9 +75,11 @@ async def lifespan(app: FastAPI):
         # The graph is an enrichment; answer from vectors until Neo4j is back.
         logger.warning(f"Neo4j unavailable at startup: {e}")
     gauge_task = asyncio.create_task(_refresh_document_gauge())
+    relay_task = asyncio.create_task(events.run_relay())
     yield
     logger.info("Query Prism API shutting down...")
     gauge_task.cancel()
+    relay_task.cancel()
     await close_pool()
     await close_driver()
     await close_redis()
@@ -93,7 +96,8 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Explicit origins: credentialed requests (the refresh cookie) can't use "*".
+    allow_origins=get_settings().cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

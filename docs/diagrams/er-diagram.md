@@ -8,9 +8,6 @@ erDiagram
         uuid id PK
         text name
         text slug
-        text plan "deprecated (0004)"
-        int queries_used_this_month "deprecated (0004)"
-        bigint storage_used_bytes "deprecated (0004)"
         timestamptz created_at
     }
 
@@ -137,7 +134,7 @@ erDiagram
         int max_storage_mb
         int max_teams
         int max_users
-        text llm_model
+        text answer_tier
         numeric price_monthly
         numeric price_yearly
     }

@@ -71,7 +71,7 @@ HTTP_LATENCY = Histogram(
     buckets=(0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
 )
 ANSWER_TTFT = Histogram(
-    "qp_answer_ttft_seconds", "Time from request to first answer token", ["model", "cached"],
+    "qp_answer_ttft_seconds", "Time from request to first answer token", ["tier", "cached"],
     buckets=(0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3, 4, 6, 10, 20),
 )
 ANSWER_CACHE = Counter("qp_answer_cache_total", "Answer cache lookups", ["result"])
@@ -81,7 +81,8 @@ RETRIEVAL_CANDIDATES = Histogram(
     buckets=(0, 1, 2, 5, 10, 15, 20),
 )
 RETRIEVAL_FALLBACKS = Counter("qp_retrieval_fallback_total", "Degraded retrieval steps", ["step"])
-LLM_ERRORS = Counter("qp_llm_errors_total", "Answer generation failures", ["model"])
+LLM_ERRORS = Counter("qp_llm_errors_total", "Answer generation failures (every route failed)", ["tier"])
+LLM_FAILOVERS = Counter("qp_llm_failovers_total", "LLM routes skipped after a provider error", ["tier", "route"])
 INGEST_DURATION = Histogram(
     "qp_ingest_duration_seconds", "Document ingestion time", ["source_type", "outcome"],
     buckets=(1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600),
@@ -89,6 +90,8 @@ INGEST_DURATION = Histogram(
 INGEST_CHUNKS = Counter("qp_ingest_chunks_total", "Chunks written by ingestion")
 DOCUMENTS_BY_STATUS = Gauge("qp_documents_by_status", "Documents per ingestion status", ["status"])
 EVENT_HANDLER_FAILURES = Counter("qp_event_handler_failures_total", "Failed domain event handlers", ["event"])
+OUTBOX_PENDING = Gauge("qp_outbox_pending", "Domain events not yet delivered")
+OUTBOX_DEAD = Counter("qp_outbox_dead_total", "Domain events given up on after max attempts", ["event"])
 
 
 # ── Request middleware ───────────────────────────────────────────────────────

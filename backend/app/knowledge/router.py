@@ -8,14 +8,13 @@ from app.shared import events
 from app.shared.config import get_settings
 from app.shared.db import get_pool
 from app.shared.security import get_current_user, can_access_team
+from app.shared.storage import get_storage, spool_dir
 from app.shared.rate_limit import limiter
-from app.shared.celery import celery_app
 from app.identity.api import get_team
 from app.workspace.api import require_topic_access
 from app.metering.api import check_storage_limit, decrement_storage
 from app.audit.api import log_event
-from app.knowledge.api import DocumentDeleted
-from app.knowledge.graph.writer import delete_document_graph
+from app.knowledge.api import DocumentDeleted, DocumentUploaded
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -111,8 +110,8 @@ async def ingest_file(
         await check_storage_limit(current_user["company_id"], file.size)
 
     document_id = str(uuid.uuid4())
-    os.makedirs(settings.upload_dir, exist_ok=True)
-    file_path = os.path.join(settings.upload_dir, f"{document_id}.{ext}")
+    storage_key = f"{document_id}.{ext}"
+    file_path = os.path.join(spool_dir(), storage_key)
 
     # Copy in 1 MB pieces so a large upload never sits in memory whole.
     size_bytes = 0
@@ -125,14 +124,17 @@ async def ingest_file(
                 f.write(piece)
         if file.size is None:
             await check_storage_limit(current_user["company_id"], size_bytes)
+        await get_storage().put(file_path, storage_key)
     except BaseException:
         if os.path.exists(file_path):
             os.remove(file_path)
         raise
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
+    # The document row and the "queue ingestion" event commit together, so a
+    # broker outage leaves the job queued for retry instead of a stuck 'pending'.
+    job_id = str(uuid.uuid4())
+    async with events.unit_of_work() as uow:
+        await uow.conn.execute(
             """
             INSERT INTO documents
                 (id, company_id, team_id, topic_id, uploaded_by, filename, original_name,
@@ -143,13 +145,9 @@ async def ingest_file(
             current_user["sub"], os.path.basename(file_path), file.filename,
             _source_type(ext), size_bytes, visibility,
         )
-
-    # Enqueue by name so the API never imports the worker's heavy dependencies.
-    task = celery_app.send_task(
-        "app.worker.ingest_document",
-        args=[document_id, file_path, _source_type(ext)],
-        queue="ingestion",
-    )
+        await uow.publish(DocumentUploaded(
+            document_id=document_id, storage_key=storage_key, source_type=_source_type(ext), job_id=job_id,
+        ))
 
     # Answer cache is invalidated by the worker once the document is searchable.
     await log_event(
@@ -164,10 +162,10 @@ async def ingest_file(
         metadata={"size_bytes": size_bytes, "source_type": _source_type(ext),
                   "topic_id": topic_id, "visibility": visibility},
     )
-    logger.info(f"[{current_user['username']}] Queued {task.id} for '{file.filename}' → team {team['name']}")
+    logger.info(f"[{current_user['username']}] Queued {job_id} for '{file.filename}' → team {team['name']}")
 
     return IngestResponse(
-        document_id=document_id, job_id=task.id,
+        document_id=document_id, job_id=job_id,
         filename=file.filename or "", status="pending",
         team_id=team_id, topic_id=topic_id,
     )
@@ -302,24 +300,22 @@ async def delete_document(document_id: str, current_user: dict = Depends(get_cur
     if not can_access_team(current_user, str(row["team_id"])):
         raise HTTPException(403, "Access denied")
 
-    async with pool.acquire() as conn:
-        filename = await conn.fetchval("SELECT original_name FROM documents WHERE id = $1", document_id)
-        await conn.execute("DELETE FROM documents WHERE id = $1", document_id)
+    # The delete and its event commit together; graph cleanup and cache
+    # invalidation follow from the event (knowledge.handlers, retrieval.handlers).
+    async with events.unit_of_work() as uow:
+        filename = await uow.conn.fetchval(
+            "DELETE FROM documents WHERE id = $1 RETURNING original_name", document_id,
+        )
+        if filename is None:
+            raise HTTPException(404, "Document not found")
+        await uow.publish(DocumentDeleted(
+            document_id=document_id, company_id=str(row["company_id"]),
+            team_id=str(row["team_id"]), visibility=row["visibility"],
+        ))
 
     # Storage is only counted once ingestion completes (see worker), so only undo it then.
     if row["file_size"] and row["status"] == "completed":
         await decrement_storage(str(row["company_id"]), row["file_size"])
-
-    try:
-        await delete_document_graph(document_id)
-    except Exception as e:
-        # The graph is derived from Postgres; orphaned nodes match no chunk and are
-        # dropped by the next build_knowledge_graph_bulk. Don't fail a completed delete.
-        logger.warning(f"[{document_id}] Graph cleanup failed: {e}")
-    await events.publish(DocumentDeleted(
-        document_id=document_id, company_id=str(row["company_id"]),
-        team_id=str(row["team_id"]), visibility=row["visibility"],
-    ))
 
     await log_event(
         company_id=str(row["company_id"]),

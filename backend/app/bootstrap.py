@@ -9,7 +9,8 @@ from app.identity.api import CompanyRegistered, TenantDirectory
 from app.metering.api import set_tenant_directory
 from app.workspace.api import TopicDeleted
 from app.workspace.handlers import create_default_topic
-from app.knowledge.api import DocumentDeleted, DocumentIngested
+from app.knowledge.api import DocumentDeleted, DocumentIngested, DocumentUploaded
+from app.knowledge.handlers import delete_graph, queue_graph_build, queue_ingestion
 from app.retrieval.handlers import drop_answers_for_document, drop_answers_for_topic
 
 
@@ -19,6 +20,9 @@ def wire() -> None:
 
     # Events
     events.subscribe(CompanyRegistered, create_default_topic)
+    events.subscribe(DocumentUploaded, queue_ingestion)
     events.subscribe(DocumentIngested, drop_answers_for_document)
+    events.subscribe(DocumentIngested, queue_graph_build)
     events.subscribe(DocumentDeleted, drop_answers_for_document)
+    events.subscribe(DocumentDeleted, delete_graph)
     events.subscribe(TopicDeleted, drop_answers_for_topic)

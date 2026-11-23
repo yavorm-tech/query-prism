@@ -107,7 +107,7 @@ async def chat(request: Request, body: ChatRequest, current_user: dict = Depends
     company_id = current_user["company_id"]
     # Reserve before any work so concurrent requests can't overshoot the quota;
     # give it back on every path that doesn't reach the LLM.
-    model = await reserve_query(company_id)
+    tier = await reserve_query(company_id)
     try:
         if not body.skip_cache:
             cached = await get_cached(current_user, body.query, body.team_id)
@@ -126,9 +126,9 @@ async def chat(request: Request, body: ChatRequest, current_user: dict = Depends
             return ChatResponse(answer=_no_docs_message(current_user, body.team_id), sources=[], query=body.query)
 
         try:
-            answer = await generate_answer(body.query, context, sources, model=model)
+            answer = await generate_answer(body.query, context, sources, tier=tier)
         except Exception:
-            LLM_ERRORS.labels(model).inc()
+            LLM_ERRORS.labels(tier).inc()
             raise
     except Exception:
         await release_query(company_id)
@@ -157,7 +157,7 @@ async def chat_stream(
     topic = await _check_scope(current_user, team_id, topic_id)
 
     company_id = current_user["company_id"]
-    model = await reserve_query(company_id)
+    tier = await reserve_query(company_id)
     started = time.perf_counter()
 
     async def event_generator():
@@ -168,7 +168,7 @@ async def chat_stream(
                 ANSWER_CACHE.labels("hit" if cached else "miss").inc()
                 if cached:
                     await release_query(company_id)
-                    ANSWER_TTFT.labels(model, "true").observe(time.perf_counter() - started)
+                    ANSWER_TTFT.labels(tier, "true").observe(time.perf_counter() - started)
                     words = cached["answer"].split(" ")
                     for i, word in enumerate(words):
                         token = word if i == len(words) - 1 else word + " "
@@ -190,9 +190,9 @@ async def chat_stream(
 
             full_answer = ""
             llm_started = True
-            async for token in stream_answer(query, context, sources, model=model):
+            async for token in stream_answer(query, context, sources, tier=tier):
                 if not full_answer:
-                    ANSWER_TTFT.labels(model, "false").observe(time.perf_counter() - started)
+                    ANSWER_TTFT.labels(tier, "false").observe(time.perf_counter() - started)
                 full_answer += token
                 yield _sse({"type": "token", "content": token})
 
@@ -220,7 +220,7 @@ async def chat_stream(
             logger.error(f"Stream error: {e}", exc_info=True)
             # An LLM call that started is billed by the provider, so it stays counted.
             if llm_started:
-                LLM_ERRORS.labels(model).inc()
+                LLM_ERRORS.labels(tier).inc()
             else:
                 await release_query(company_id)
             yield _sse({"type": "error", "content": "Something went wrong while answering. Please try again."})

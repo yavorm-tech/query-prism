@@ -73,7 +73,7 @@ graph TB
 | `neo4j_data` | `/data` | Neo4j persistent data |
 | `redis_data` | `/data` | Answer cache snapshot (RDB) |
 | `redis_broker_data` | `/data` | Celery broker persistence (AOF) |
-| `uploads` | `/app/uploads` | Uploaded files awaiting ingestion (shared between api and worker; deleted after ingestion) |
+| `uploads` | `/app/uploads` | Uploaded files awaiting ingestion when `STORAGE_BACKEND=local` (shared between api and worker; deleted after ingestion). With `STORAGE_BACKEND=s3` files go to the bucket instead and api/worker can run on separate hosts |
 | `certbot_conf` | `/etc/letsencrypt` | SSL certificate store |
 | `certbot_www` | `/var/www/certbot` | ACME challenge files |
 
@@ -106,7 +106,10 @@ worker → same datastores; consumes redis-broker queue "ingestion"
 - [ ] Set `NEO4J_PASSWORD` to a strong password
 - [ ] Mount persistent volumes for PostgreSQL, Neo4j, Redis, and uploads
 - [x] Enable Redis AOF persistence for durability (`redis-broker`)
-- [ ] Schedule `procedures/backup.sh` nightly (cron) and set `BACKUP_S3_URI` for off-host copies
+- [ ] Set `BACKUP_S3_URI` (+ `AWS_*`) in `.env`, run `procedures/install-backup-cron.sh` on the host, then `procedures/backup.sh` once to check
+- [ ] Alert when `backups/LAST_SUCCESS` is older than 26 h
+- [ ] Set `FRONTEND_URL` / `APP_URL` to the public https origin (CORS allow-list and the refresh cookie's `Secure` flag follow it)
+- [ ] Optional: `STORAGE_BACKEND=s3` + `S3_*` to keep uploads off the host volume
 - [ ] Set up log rotation for all service containers
 - [x] Flower runs only in the dev overlay, bound to 127.0.0.1
 - [ ] Scrape `api:8000/metrics` and `worker:9101/metrics` with Prometheus

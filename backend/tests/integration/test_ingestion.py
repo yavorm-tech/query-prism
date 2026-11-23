@@ -6,6 +6,7 @@ import pytest
 from app.retrieval import cache
 from app.shared.db import get_pool
 from app.shared.config import get_settings
+from app.shared.storage import get_storage
 
 pytestmark = pytest.mark.integration
 
@@ -14,15 +15,14 @@ pytestmark = pytest.mark.integration
 def queued(monkeypatch):
     sent = []
 
-    def send_task(name, args=None, queue=None):
+    def send_task(name, args=None, queue=None, task_id=None):
         sent.append((name, args))
 
         class Result:
-            id = "task-1"
+            id = task_id or "task-1"
         return Result()
 
-    monkeypatch.setattr("app.knowledge.router.celery_app.send_task", send_task)
-    monkeypatch.setattr("app.knowledge.tasks.celery_app.send_task", send_task)
+    monkeypatch.setattr("app.shared.celery.celery_app.send_task", send_task)
     return sent
 
 
@@ -72,8 +72,9 @@ async def test_worker_retries_with_file_is_idempotent_counts_storage_and_clears_
                           files={"file": ("ok.txt", body, "text/plain")}, headers=co["headers"])
     assert r.status_code == 200, r.text
     document_id = r.json()["document_id"]
-    name, (doc_arg, path, _) = queued[-1]
+    name, (doc_arg, key, _) = queued[-1]
     assert name == "app.worker.ingest_document" and doc_arg == document_id
+    path = get_storage().path(key)
     assert os.path.getsize(path) == len(body)
 
     # A cached answer for this team must disappear once the document is searchable.
@@ -91,7 +92,7 @@ async def test_worker_retries_with_file_is_idempotent_counts_storage_and_clears_
         return real_load(p)
     monkeypatch.setattr(loaders, "load_document", flaky)
 
-    await _run_worker(document_id, path)
+    await _run_worker(document_id, key)
     status, chunks, storage = await _doc_state(document_id)
     assert attempts["n"] == 2 and status == "completed" and chunks > 0
     assert storage == len(body)
@@ -102,22 +103,52 @@ async def test_worker_retries_with_file_is_idempotent_counts_storage_and_clears_
     # Re-running the same document (late retry) replaces chunks instead of duplicating them.
     with open(path, "wb") as f:
         f.write(body)
-    await _run_worker(document_id, path)
-    assert (await _doc_state(document_id))[1] == chunks
+    await _run_worker(document_id, key)
+    assert (await _doc_state(document_id))[1:] == (chunks, len(body))   # storage not counted twice
 
 
 async def test_worker_marks_failed_only_after_last_attempt(client, register, queued, ai_stubs, monkeypatch):
     co = await register()
     r = await client.post("/ingest", params={"team_id": co["team_id"]},
                           files={"file": ("bad.txt", b"x" * 100, "text/plain")}, headers=co["headers"])
-    document_id, path = r.json()["document_id"], queued[-1][1][1]
+    document_id, key = r.json()["document_id"], queued[-1][1][1]
+    path = get_storage().path(key)
 
     from app.knowledge import loaders
     monkeypatch.setattr(loaders, "load_document", lambda p: (_ for _ in ()).throw(RuntimeError("corrupt")))
-    await _run_worker(document_id, path)
+    await _run_worker(document_id, key)
     status, _, storage = await _doc_state(document_id)
     assert status == "failed" and storage == 0
     assert not os.path.exists(path)
 
     # Deleting a document that never completed must not reduce storage below what was counted.
     assert (await client.delete(f"/ingest/{document_id}", headers=co["headers"])).status_code == 204
+
+
+async def test_upload_and_ingest_through_s3_storage(client, register, queued, ai_stubs, monkeypatch):
+    import boto3
+    from moto import mock_aws
+    from app.shared import storage as storage_mod
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="qp-test")
+        store = storage_mod.S3Storage("qp-test", "uploads", s3)
+        monkeypatch.setattr(get_settings(), "storage_backend", "s3")
+        monkeypatch.setattr(storage_mod, "get_storage", lambda: store)
+        monkeypatch.setattr("app.knowledge.router.get_storage", lambda: store)
+        monkeypatch.setattr("app.knowledge.tasks.get_storage", lambda: store)
+
+        co = await register()
+        body = b"Initech moved its office to Austin. " * 50
+        r = await client.post("/ingest", params={"team_id": co["team_id"]},
+                              files={"file": ("s3.txt", body, "text/plain")}, headers=co["headers"])
+        assert r.status_code == 200, r.text
+        document_id = r.json()["document_id"]
+        key = queued[-1][1][1]
+        assert s3.head_object(Bucket="qp-test", Key=f"uploads/{key}")["ContentLength"] == len(body)
+
+        await _run_worker(document_id, key)
+        status, chunks, _ = await _doc_state(document_id)
+        assert status == "completed" and chunks > 0
+        assert s3.list_objects_v2(Bucket="qp-test").get("KeyCount", 0) == 0

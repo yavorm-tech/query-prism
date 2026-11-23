@@ -2,6 +2,7 @@
 Topics repository — database operations for topic management.
 """
 import logging
+from app.shared import events
 from app.shared.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -96,18 +97,26 @@ async def get_topic(topic_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def delete_topic(topic_id: str) -> bool:
+async def delete_topic(topic_id: str, announce: object | None = None) -> bool:
     """
     Delete a topic. Its documents are kept: documents.topic_id is ON DELETE SET NULL,
     so they stay searchable at team level. Returns True if deleted, False if not found.
+    `announce` (a TopicDeleted) is published in the same transaction as the delete.
     """
+    async with events.unit_of_work() as uow:
+        result = await uow.conn.execute("DELETE FROM topics WHERE id = $1", topic_id)
+        deleted = result != "DELETE 0"
+        if deleted and announce is not None:
+            await uow.publish(announce)
+    return deleted
+
+
+async def team_has_topic_named(team_id: str, name: str) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM topics WHERE id = $1",
-            topic_id,
-        )
-    return result != "DELETE 0"
+        return bool(await conn.fetchval(
+            "SELECT 1 FROM topics WHERE team_id = $1 AND name = $2 LIMIT 1", team_id, name,
+        ))
 
 
 async def update_topic(

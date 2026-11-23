@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { getMe, getTeams } from "./api/auth";
+import { getMe, getTeams, logout as apiLogout } from "./api/auth";
+import { refreshAccessToken } from "./api/client";
 import type { User, Team } from "./api/types";
 import { getToken, setToken, clearToken } from "./token";
 
@@ -46,9 +47,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (getToken()) {
       loadUserAndTeams();
-    } else {
-      setLoading(false);
+      return;
     }
+    // No access token in this tab: an existing session may still be in the
+    // httpOnly refresh cookie (new tab, or after an OAuth redirect).
+    refreshAccessToken().then((token) => (token ? loadUserAndTeams() : setLoading(false)));
   }, [loadUserAndTeams]);
 
   const login = async (token: string) => {
@@ -58,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    apiLogout().catch(() => {});
     clearToken();
     setUser(null);
     setTeams([]);

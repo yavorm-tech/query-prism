@@ -37,8 +37,8 @@ sequenceDiagram
     Events->>Workspace: create_default_topic
     Workspace->>Postgres: INSERT topic "Main"
 
-    Identity->>Identity: Build JWT payload
-    Identity-->>Frontend: {access_token, token_type}
+    Identity->>Identity: Start session; build 15-min access JWT
+    Identity-->>Frontend: {access_token, expires_in} + Set-Cookie qp_refresh
     Frontend->>Frontend: Store token, redirect to app
 ```
 
@@ -66,8 +66,10 @@ sequenceDiagram
     Google-->>Identity: ID token + user info
 
     alt Existing user
-        Identity->>Identity: Generate JWT
-        Identity-->>Frontend: {access_token}
+        Identity->>Identity: Start session (refresh token)
+        Identity-->>Frontend: 302 /login?oauth=success + Set-Cookie qp_refresh (HttpOnly, Path=/auth)
+        Frontend->>Identity: POST /auth/refresh (cookie)
+        Identity-->>Frontend: {access_token, expires_in: 900} + rotated cookie
     else New user
         Identity->>Identity: Generate pending_token (15 min)
         Identity-->>Frontend: {pending_token, email}
@@ -106,9 +108,9 @@ sequenceDiagram
     Knowledge->>Knowledge: Check team / topic access, file type
     Knowledge->>Metering: check_storage_limit(company_id, size)
     Metering-->>Knowledge: OK (or 413)
-    Knowledge->>Knowledge: Stream file to uploads volume in 1 MB pieces
-    Knowledge->>Postgres: INSERT document (status=pending)
-    Knowledge->>Broker: send_task("app.worker.ingest_document")
+    Knowledge->>Knowledge: Stream file in 1 MB pieces, then put() to upload storage (volume or S3)
+    Knowledge->>Postgres: BEGIN; INSERT document (pending); INSERT outbox DocumentUploaded; COMMIT
+    Knowledge->>Broker: DocumentUploaded handler: send_task("app.worker.ingest_document", task_id=job_id)
     Knowledge-->>Frontend: {document_id, job_id, status: "pending"}
 
     Note over Worker: Asynchronous; retried up to 3× (file kept between attempts)
@@ -119,10 +121,10 @@ sequenceDiagram
     Worker->>OpenAI: Embed chunks (text-embedding-3-large)
     OpenAI-->>Worker: 3072-dim vectors
     Worker->>Postgres: DELETE + INSERT chunks (halfvec) in one transaction
+    Worker->>Postgres: BEGIN; UPDATE status=completed (only if not already); INSERT outbox DocumentIngested; COMMIT
     Worker->>Metering: increment_storage(company_id, file_size)
-    Worker->>Postgres: UPDATE document status=completed
-    Worker->>Retrieval: publish DocumentIngested → drop cached answers
-    Worker->>Broker: send_task("app.graph_worker.build_knowledge_graph")
+    Worker->>Retrieval: DocumentIngested handler → drop cached answers
+    Worker->>Broker: DocumentIngested handler → send_task("app.graph_worker.build_knowledge_graph")
 
     Note over Worker: Graph task (same worker, separate task)
     Worker->>OpenAI: NER per chunk (GPT-4o-mini) + relation extraction

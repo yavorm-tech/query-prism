@@ -25,7 +25,7 @@
 ### AI / ML
 | Component | Technology |
 |-----------|-----------|
-| LLM | Anthropic Claude, OpenAI GPT |
+| LLM | Anthropic Claude, OpenAI GPT behind one adapter (`app/shared/ai/llm.py`): plans name a tier, tiers map to ordered provider:model routes with failover |
 | Embeddings | OpenAI text-embedding-3-large (3072 dims) |
 | Re-ranking | Cohere API |
 | Token Counting | tiktoken |
@@ -100,14 +100,27 @@ Until v2 it was five HTTP microservices sharing one database; see
 | Cross-context SQL reads may only shrink (allowlist) | `tests/architecture/test_boundaries.py` |
 | Every table has an owning context | `tests/architecture/test_boundaries.py` |
 
-When a lower context must trigger work in a higher one it publishes a **domain
-event** (`app/shared/events.py`); handlers are wired in `app/bootstrap.py`:
+When a lower context must trigger work in a higher one, or work must follow a
+committed change, it publishes a **domain event** (`app/shared/events.py`);
+handlers are wired in `app/bootstrap.py`:
 
 | Event | Published by | Handled by |
 |-------|--------------|-----------|
-| `CompanyRegistered` | identity | workspace creates the default "Main" topic |
-| `DocumentIngested` / `DocumentDeleted` | knowledge | retrieval drops affected cached answers |
+| `CompanyRegistered` | identity | workspace creates the default "Main" topic (skipped if it exists) |
+| `DocumentUploaded` | knowledge (upload) | knowledge queues the ingestion task (Celery task id = `job_id`) |
+| `DocumentIngested` | knowledge (worker) | retrieval drops affected cached answers; knowledge queues graph extraction |
+| `DocumentDeleted` | knowledge | retrieval drops affected cached answers; knowledge deletes the document's graph |
 | `TopicDeleted` | workspace | retrieval drops the team's cached answers |
+
+Events go through a **transactional outbox** (ADR-010): `uow.publish()` writes
+the event to `shared.outbox` in the same transaction as the change, so an event
+exists exactly when its change committed. It is delivered right after commit in
+the publishing process; if a handler fails or the process dies, the relay in
+the API (`events.run_relay`, every 5 s) redelivers it with exponential backoff,
+up to 10 attempts. Delivery is at-least-once, so handlers are idempotent.
+`CompanyRegistered` is the one event not yet in the same transaction as its
+change (registration spans several statements); it is still recorded before
+delivery, so a failed handler is retried.
 
 Metering needs team/user counts for the usage page without reading identity's
 tables: identity implements metering's `TenantDirectory` port (also wired in
@@ -117,15 +130,26 @@ tables: identity implements metering's `TenantDirectory` port (also wired in
 
 | Schema | Tables | Owner |
 |--------|--------|-------|
-| `identity` | companies, teams, users, team_members, invites, password_reset_tokens | identity |
+| `identity` | companies, teams, users, team_members, invites, password_reset_tokens, refresh_tokens | identity |
 | `workspace` | topics | workspace |
 | `knowledge` | documents, chunks (pgvector halfvec + HNSW) | knowledge |
 | `retrieval` | query_history | retrieval |
 | `metering` | plan_limits, subscriptions | metering |
 | `audit` | audit_log | audit |
+| `shared` | outbox | shared kernel (`app/shared/events.py`) |
 
 Migrations are Alembic revisions in `backend/migrations/versions/`, applied by the
-`migrate` compose service before `api` and `worker` start.
+`migrate` compose service before `api` and `worker` start. Alembic alone builds a
+fresh database: revision 0001 creates the baseline schema from
+`backend/migrations/sql/0001_baseline.sql` when the database is empty.
+
+### Upload storage
+
+Files wait between upload and ingestion in `app/shared/storage.py`:
+`STORAGE_BACKEND=local` (default) uses the `uploads` volume shared by `api` and
+`worker`, so both must run on one host; `STORAGE_BACKEND=s3` uses any
+S3-compatible bucket (`S3_BUCKET`, `S3_ENDPOINT_URL`, …), so they can run on
+different hosts. Files are deleted once ingestion finishes or finally fails.
 
 ### Observability
 
@@ -135,13 +159,16 @@ Migrations are Alembic revisions in `backend/migrations/versions/`, applied by t
 - **Metrics**: `api:8000/metrics` and `worker:9101/metrics` (internal only, not
   routed by the gateway). Key series: `qp_answer_ttft_seconds`,
   `qp_answer_cache_total`, `qp_no_context_answers_total`,
-  `qp_retrieval_fallback_total`, `qp_llm_errors_total`,
-  `qp_ingest_duration_seconds`, `qp_documents_by_status`,
+  `qp_retrieval_fallback_total`, `qp_llm_errors_total` (every route of a tier
+  failed), `qp_llm_failovers_total` (a route was skipped), `qp_outbox_pending`,
+  `qp_outbox_dead_total`, `qp_ingest_duration_seconds`, `qp_documents_by_status`,
   `http_request_duration_seconds`.
 
 Suggested alerts: `qp_documents_by_status{status="pending"}` > 0 for 15 min;
-`rate(qp_llm_errors_total[5m])` > 5 % of answers; p95 of
-`qp_answer_ttft_seconds` > 4 s for 15 min.
+`rate(qp_llm_errors_total[5m])` > 5 % of answers; any increase of
+`qp_llm_failovers_total` for 10 min (a provider or model is failing);
+`qp_outbox_pending` > 0 for 15 min or any `qp_outbox_dead_total`; p95 of
+`qp_answer_ttft_seconds` > 4 s for 15 min; `backups/LAST_SUCCESS` older than 26 h.
 
 ## Data Flow: Document Ingestion
 
@@ -151,19 +178,21 @@ User uploads file
        ▼
 knowledge (POST /ingest) ──► validates type/size, team/topic access
        │          ──► checks storage quota (metering)
-       │          ──► stores metadata in PostgreSQL (status=pending)
-       │          ──► saves file to disk
+       │          ──► streams the file to upload storage (local volume or S3)
+       │          ──► one transaction: document row (status=pending) + DocumentUploaded
        ▼
-send_task → redis-broker (queue "ingestion")
+DocumentUploaded handler: send_task → redis-broker (queue "ingestion")
        │
        ▼
 Celery Worker
-  1. Load file ──► extract raw text
+  0. Skip if the document is already completed (duplicate delivery)
+  1. Load file (from upload storage) ──► extract raw text
   2. Chunk text (LlamaIndex SentenceSplitter)
   3. Embed chunks (OpenAI batch API)  ──► PostgreSQL chunks table (pgvector)
-  4. Count storage (metering), status → "completed"
-  5. Publish DocumentIngested (retrieval drops cached answers)
-  6. Queue build_knowledge_graph: NER + relations (GPT-4o-mini) ──► Neo4j
+  4. One transaction: status → "completed" + DocumentIngested
+  5. Count storage (metering), delete the uploaded file
+  6. DocumentIngested handlers: drop cached answers; queue build_knowledge_graph
+     (NER + relations with GPT-4o-mini ──► Neo4j)
        │
        ▼
 PostgreSQL + Neo4j ready for queries
@@ -189,7 +218,7 @@ Retriever
 Cohere Re-ranking (optional)
        │
        ▼
-LLM (Claude / GPT based on plan)
+LLM adapter: plan's answer tier → first working provider:model route
   ├── Streaming: SSE token stream to client
   └── Non-streaming: full answer returned
        │

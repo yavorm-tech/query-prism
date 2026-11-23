@@ -62,7 +62,7 @@ functions directly. Plan and counters live in `metering.subscriptions`.
 |----------|---------|-----------|
 | `open_subscription(company_id)` | identity (sign-up) | Creates the `starter` subscription |
 | `get_plan(company_id)` | identity (`/auth/me`) | Current plan name |
-| `reserve_query(company_id)` | retrieval | Atomically consumes one query (rolls the month over); returns the plan's model; 429 when exhausted |
+| `reserve_query(company_id)` | retrieval | Atomically consumes one query (rolls the month over); returns the plan's answer tier (`basic`/`standard`/`premium`); 429 when exhausted |
 | `release_query(company_id)` | retrieval | Returns a reserved query when no LLM call happened |
 | `check_storage_limit(company_id, bytes)` | knowledge | 413 when the upload would exceed the plan |
 | `check_team_limit(company_id, team_count)` | identity | 403 `team_limit_reached` |

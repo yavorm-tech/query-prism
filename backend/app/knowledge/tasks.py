@@ -1,12 +1,12 @@
 """
 Celery task — document ingestion pipeline.
 
-load → chunk → embed → write chunks → count storage → mark complete →
-announce DocumentIngested → queue knowledge-graph extraction.
+load → chunk → embed → write chunks → mark complete + announce DocumentIngested
+(one transaction) → count storage. Graph extraction is queued by the
+DocumentIngested handler (knowledge.handlers).
 """
 import json
 import logging
-import os
 import time
 import uuid
 
@@ -14,6 +14,7 @@ from app.shared import events
 from app.shared.celery import celery_app
 from app.shared.db import get_pool
 from app.shared.loop_local import run_in_fresh_loop
+from app.shared.storage import get_storage
 from app.shared.observability import INGEST_CHUNKS, INGEST_DURATION, bind, clear_context
 from app.metering.api import increment_storage
 from app.knowledge.api import DocumentIngested
@@ -27,13 +28,14 @@ logger = logging.getLogger(__name__)
     max_retries=3,
     default_retry_delay=30,
 )
-def ingest_document(self, document_id: str, file_path: str, source_type: str):
+def ingest_document(self, document_id: str, storage_key: str, source_type: str):
+    """storage_key: an app.shared.storage key (older queued jobs pass an absolute path, also accepted)."""
     clear_context()
     bind(document_id=document_id, task="ingest_document", attempt=self.request.retries + 1)
-    logger.info(f"[{document_id}] Starting ingestion: {file_path} (attempt {self.request.retries + 1})")
+    logger.info(f"[{document_id}] Starting ingestion: {storage_key} (attempt {self.request.retries + 1})")
     started = time.perf_counter()
     try:
-        run_in_fresh_loop(lambda: _ingest_async(document_id, file_path, source_type))
+        run_in_fresh_loop(lambda: _ingest_async(document_id, storage_key, source_type))
     except Exception as exc:
         if self.request.retries < self.max_retries:
             # Keep the file: the retry needs it.
@@ -43,33 +45,40 @@ def ingest_document(self, document_id: str, file_path: str, source_type: str):
         INGEST_DURATION.labels(source_type, "failed").observe(time.perf_counter() - started)
         error = str(exc)
         run_in_fresh_loop(lambda: _mark_failed(document_id, error))
-        _remove_file(file_path)
+        _remove_upload(document_id, storage_key)
         raise
     INGEST_DURATION.labels(source_type, "completed").observe(time.perf_counter() - started)
-    _remove_file(file_path)
+    _remove_upload(document_id, storage_key)
 
 
-def _remove_file(file_path: str) -> None:
-    if os.path.exists(file_path):
-        os.remove(file_path)
+def _remove_upload(document_id: str, storage_key: str) -> None:
+    try:
+        get_storage().delete_sync(storage_key)
+    except Exception as e:
+        logger.warning(f"[{document_id}] Could not delete upload {storage_key}: {e}")
 
 
-async def _ingest_async(document_id: str, file_path: str, source_type: str):
+async def _ingest_async(document_id: str, storage_key: str, source_type: str):
     from app.knowledge.loaders import load_document
     from app.knowledge.chunker import chunk_text
     from app.shared.ai.embedder import embed_texts
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # 1. Mark as processing
-        await conn.execute(
-            "UPDATE documents SET status='processing', updated_at=now() WHERE id=$1",
+        # 1. Mark as processing. A document that is already completed (a duplicate
+        #    delivery of the queue event, or a deleted one) is left alone.
+        started = await conn.fetchval(
+            "UPDATE documents SET status='processing', updated_at=now() WHERE id=$1 AND status <> 'completed' RETURNING id",
             document_id
         )
+    if not started:
+        logger.info(f"[{document_id}] Already completed or deleted; skipping")
+        return
 
     # 2. Extract text
     logger.info(f"[{document_id}] Loading document...")
-    text, doc_metadata = load_document(file_path)
+    with get_storage().local_copy(storage_key) as file_path:
+        text, doc_metadata = load_document(file_path)
 
     # Strip null bytes — PostgreSQL rejects \x00 in text columns
     text = text.replace("\x00", "")
@@ -121,29 +130,27 @@ async def _ingest_async(document_id: str, file_path: str, source_type: str):
         INGEST_CHUNKS.inc(len(records))
         logger.info(f"[{document_id}] Inserted {len(chunks)} chunks")
 
-        # 6. Count storage (metering owns the counter), then mark complete.
-        doc_row = await conn.fetchrow(
-            "SELECT company_id, team_id, visibility, file_size FROM documents WHERE id = $1", document_id
+    # 6. Mark complete and announce it in one transaction. Only the first
+    #    transition to 'completed' counts: a duplicate or late run of this task
+    #    must not count the file's storage twice.
+    async with events.unit_of_work() as uow:
+        doc_row = await uow.conn.fetchrow(
+            """
+            UPDATE documents SET status='completed', error_message=NULL, updated_at=now()
+            WHERE id=$1 AND status <> 'completed'
+            RETURNING company_id, team_id, visibility, file_size
+            """,
+            document_id,
         )
-        if doc_row and doc_row["file_size"]:
-            await increment_storage(str(doc_row["company_id"]), doc_row["file_size"])
-
-        await conn.execute(
-            "UPDATE documents SET status='completed', updated_at=now() WHERE id=$1",
-            document_id
-        )
+        if doc_row:
+            # Retrieval drops answers cached without this document; knowledge queues graph extraction.
+            await uow.publish(DocumentIngested(
+                document_id=document_id, company_id=str(doc_row["company_id"]),
+                team_id=str(doc_row["team_id"]), visibility=doc_row["visibility"],
+            ))
+    if doc_row and doc_row["file_size"]:
+        await increment_storage(str(doc_row["company_id"]), doc_row["file_size"])
     logger.info(f"[{document_id}] Ingestion complete")
-
-    # 7. Let other contexts react (retrieval drops answers cached without this document)
-    if doc_row:
-        await events.publish(DocumentIngested(
-            document_id=document_id, company_id=str(doc_row["company_id"]),
-            team_id=str(doc_row["team_id"]), visibility=doc_row["visibility"],
-        ))
-
-    # 8. Chain KG extraction
-    celery_app.send_task("app.graph_worker.build_knowledge_graph", args=[document_id], queue="ingestion")
-    logger.info(f"[{document_id}] KG extraction queued")
 
 
 async def _mark_failed(document_id: str, error: str):

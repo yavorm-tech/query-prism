@@ -20,7 +20,6 @@ Rules:
 import logging
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
-from app.shared import events
 from app.shared.security import get_current_user, can_access_team
 from app.shared.db import get_pool
 from app.workspace.service import (
@@ -257,11 +256,12 @@ async def delete_topic_endpoint(
         )
 
     team_id = str(topic["team_id"])
-    deleted = await delete_topic(topic_id)
+    deleted = await delete_topic(
+        topic_id, announce=TopicDeleted(topic_id=topic_id, team_id=team_id, company_id=current_user["company_id"]),
+    )
     if not deleted:
         raise HTTPException(404, "Topic not found")
 
-    await events.publish(TopicDeleted(topic_id=topic_id, team_id=team_id, company_id=current_user["company_id"]))
     await log_event(
         company_id=current_user["company_id"],
         event_type="topic.deleted",

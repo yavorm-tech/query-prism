@@ -7,8 +7,8 @@ Unit and architecture tests need nothing. Integration tests need Postgres
     TEST_DATABASE_URL=postgresql://user:pass@host:5432/postgres
     REDIS_URL=redis://host:6379/15
 
-A fresh database (qp_test) is created from postgres/init.sql + `alembic upgrade
-head` once per session, so every run exercises the real migration chain.
+A fresh, empty database (qp_test) is built by `alembic upgrade head` once per
+session, so every run exercises the real migration chain from the baseline.
 External AI providers are stubbed; Neo4j is not required (retrieval falls back
 to vector-only, which the tests also rely on).
 """
@@ -22,7 +22,6 @@ import uuid
 import pytest
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
-INIT_SQL = BACKEND.parent / "postgres" / "init.sql"
 TEST_DB = "qp_test"
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-" + "x" * 40)
@@ -49,11 +48,6 @@ def _create_test_database() -> str:
         try:
             await conn.execute(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)")
             await conn.execute(f"CREATE DATABASE {TEST_DB}")
-        finally:
-            await conn.close()
-        conn = await asyncpg.connect(test_url)
-        try:
-            await conn.execute(INIT_SQL.read_text())
         finally:
             await conn.close()
 

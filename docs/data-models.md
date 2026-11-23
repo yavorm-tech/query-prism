@@ -11,19 +11,15 @@ module (see `docs/architecture.md`).
 
 The top-level tenant table. Every other resource belongs to a company.
 
-> The plan and usage columns below are **deprecated** since Alembic revision 0004:
-> the plan and counters now live in `metering.subscriptions` and these columns are
-> no longer maintained. They are kept for one release as a rollback path.
+> The plan and usage columns (`plan`, `max_*`, `queries_used_this_month`,
+> `storage_used_bytes`, …) were moved to `metering.subscriptions` in revision 0004
+> and dropped in revision 0005.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID PK | Unique identifier |
 | `name` | TEXT NOT NULL | Display name |
 | `slug` | TEXT UNIQUE | URL-safe identifier |
-| `plan` | TEXT | *Deprecated* — see `subscriptions.plan` |
-| `max_storage_mb`, `max_users`, `max_teams` | INT | *Deprecated* — limits come from `plan_limits` |
-| `queries_used_this_month`, `queries_reset_at` | INT / TIMESTAMPTZ | *Deprecated* — see `subscriptions` |
-| `storage_used_bytes` | BIGINT | *Deprecated* — see `subscriptions` |
 | `created_at` | TIMESTAMPTZ | Creation timestamp |
 
 ---
@@ -211,9 +207,44 @@ Reference table (schema `metering`) mapping plan names to their limits and prici
 | `max_storage_mb` | INT | Storage quota in MB |
 | `max_teams` | INT | Team quota |
 | `max_users` | INT | User quota |
-| `llm_model` | TEXT | LLM model string for this plan |
+| `answer_tier` | TEXT | `basic`, `standard` or `premium`. Which provider and model serve a tier (with failover) is configuration, not data: `LLM_TIER_*` (revision 0007; replaced `llm_model`) |
 | `price_monthly` | NUMERIC | Monthly price in USD |
 | `price_yearly` | NUMERIC | Yearly price in USD (per month) |
+
+---
+
+### `refresh_tokens`
+
+Schema `identity`. One row per issued refresh token (revision 0006).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID PK | |
+| `user_id` | UUID FK → users | Owner (cascade delete) |
+| `family_id` | UUID | All tokens of one login session |
+| `token_hash` | TEXT UNIQUE | SHA-256 of the cookie value |
+| `expires_at` | TIMESTAMPTZ | |
+| `used_at` | TIMESTAMPTZ | Set when exchanged for the next token |
+| `revoked_at` | TIMESTAMPTZ | Set on logout, reuse detection, password reset |
+
+---
+
+### `shared.outbox`
+
+Domain events waiting for, or recently done with, delivery (revision 0008). Written by
+`app/shared/events.py` in the publisher's transaction; delivered after commit and
+redelivered by the API's relay with exponential backoff, up to 10 attempts.
+Delivered rows are deleted after 7 days.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | BIGSERIAL PK | |
+| `event_type` | TEXT | Event class name, e.g. `DocumentIngested` |
+| `payload` | JSONB | The event's fields |
+| `created_at`, `claimed_at`, `processed_at` | TIMESTAMPTZ | Lifecycle |
+| `attempts` | INT | Delivery attempts so far |
+| `available_at` | TIMESTAMPTZ | Earliest next retry |
+| `last_error` | TEXT | Last handler failure |
 
 ---
 

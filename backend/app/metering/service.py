@@ -56,7 +56,7 @@ async def _get_subscription(company_id: str) -> dict | None:
                    pl.max_storage_mb,
                    pl.max_teams,
                    pl.max_users,
-                   pl.llm_model,
+                   pl.answer_tier,
                    pl.price_monthly
             FROM subscriptions s
             JOIN plan_limits pl ON pl.plan = s.plan
@@ -173,11 +173,11 @@ async def reserve_query(company_id: str, _open_if_missing: bool = True) -> str:
     """
     Consume one query in a single statement: rolls the month over if needed and
     only increments while under the plan limit, so concurrent requests can't overshoot.
-    Returns the plan's LLM model; raises 429 when the quota is exhausted.
+    Returns the plan's answer tier (basic/standard/premium); raises 429 when the quota is exhausted.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        model = await conn.fetchval(
+        tier = await conn.fetchval(
             """
             WITH period AS (SELECT date_trunc('month', now()) AS start)
             UPDATE subscriptions s SET
@@ -198,12 +198,12 @@ async def reserve_query(company_id: str, _open_if_missing: bool = True) -> str:
                   OR period.start > date_trunc('month', s.queries_reset_at)
                   OR s.queries_used_this_month < pl.max_queries
               )
-            RETURNING pl.llm_model
+            RETURNING pl.answer_tier
             """,
             company_id,
         )
-    if model:
-        return model
+    if tier:
+        return tier
 
     # Nothing updated: the quota is exhausted, or the company has no subscription
     # yet (opened lazily so a missed registration hook can't block the company).

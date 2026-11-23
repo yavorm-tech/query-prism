@@ -3,13 +3,14 @@ import { useState, useEffect } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { Button, Label, TextInput, Alert, Card } from "flowbite-react";
 import { login as apiLogin } from "../lib/api/auth";
+import { refreshAccessToken } from "../lib/api/client";
 import { useAuth } from "../lib/auth-context";
 
 export default function LoginPage() {
   const { login } = useAuth();
   const nav = useNavigate();
   const [params] = useSearchParams();
-  const oauthToken = params.get("token");
+  const oauthSuccess = params.get("oauth") === "success";
   const oauthError = params.get("error");
   const [error, setError] = useState<string | null>(
     oauthError === "oauth_cancelled"
@@ -19,12 +20,14 @@ export default function LoginPage() {
       : null
   );
 
-  // If redirected back from Google with a token, complete login on mount:
+  // Back from Google: the session is in the refresh cookie; exchange it for an access token.
   useEffect(() => {
-    if (oauthToken) {
-      login(oauthToken).then(() => nav("/"));
-    }
-  }, [oauthToken, login, nav]);
+    if (!oauthSuccess) return;
+    refreshAccessToken().then((token) => {
+      if (token) login(token).then(() => nav("/"));
+      else setError("Google sign-in failed. Please try again.");
+    });
+  }, [oauthSuccess, login, nav]);
 
   const form = useForm({
     defaultValues: { email: "", password: "" },

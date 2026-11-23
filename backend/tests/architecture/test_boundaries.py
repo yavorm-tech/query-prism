@@ -26,7 +26,10 @@ def _load_ownership() -> dict[str, str]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     table_schema = {t: schema for schema, tables in module.OWNERSHIP.items() for t in tables}
-    table_schema["subscriptions"] = "metering"  # revision 0004
+    # Tables added after 0003 are created schema-qualified: CREATE TABLE ... metering.subscriptions
+    for path in sorted(MIGRATIONS.glob("*.py")):
+        for schema, table in re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)\.(\w+)", path.read_text()):
+            table_schema[table] = schema
     return table_schema
 
 
@@ -129,6 +132,8 @@ def test_cross_context_reads_do_not_grow():
 
 
 def test_every_table_has_an_owner():
-    init_sql = (APP.parents[1] / "postgres" / "init.sql").read_text()
-    tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", init_sql))
+    baseline = (APP.parent / "migrations" / "sql" / "0001_baseline.sql").read_text()
+    tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", baseline))
+    for path in MIGRATIONS.glob("*.py"):
+        tables |= set(re.findall(r"CREATE TABLE IF NOT EXISTS (?:\w+\.)?(\w+)", path.read_text()))
     assert tables <= set(TABLE_SCHEMA), f"Tables without an owning context: {sorted(tables - set(TABLE_SCHEMA))}"

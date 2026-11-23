@@ -12,8 +12,18 @@ from app.shared.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-async def send_invite_email(email: str, company_name: str, team_name: str, invite_token: str) -> None:
+def _expiry_text(hours: int) -> str:
+    if hours % 24 == 0:
+        days = hours // 24
+        return f"{days} day" if days == 1 else f"{days} days"
+    return f"{hours} hour" if hours == 1 else f"{hours} hours"
+
+
+async def send_invite_email(
+    email: str, company_name: str, team_name: str, invite_token: str, expires_hours: int,
+) -> None:
     settings = get_settings()
+    expires = _expiry_text(expires_hours)
     app_name = settings.app_name
     accept_url = f"{settings.app_url}/login?invite={invite_token}"
     subject = f"You've been invited to join {team_name} at {app_name}"
@@ -31,14 +41,14 @@ async def send_invite_email(email: str, company_name: str, team_name: str, invit
         </a>
       </p>
       <p style="color:#888;font-size:13px;">
-        This link expires in 7 days. If you didn't expect this invitation, you can ignore this email.
+        This link expires in {expires}. If you didn't expect this invitation, you can ignore this email.
       </p>
     </div>
     """
     body_text = (
         f"You've been invited to join {team_name} at {company_name} on {app_name}.\n\n"
         f"Accept your invitation: {accept_url}\n\n"
-        f"This link expires in 7 days."
+        f"This link expires in {expires}."
     )
     try:
         await send_email(email, subject, body_html, body_text)

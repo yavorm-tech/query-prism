@@ -36,6 +36,7 @@ classDiagram
 
     class knowledge_api["knowledge.api"] {
         <<events>>
+        DocumentUploaded
         DocumentIngested
         DocumentDeleted
     }
@@ -103,13 +104,20 @@ classDiagram
 
 ## Domain events
 
-Lower modules announce events; higher modules react. Handlers are subscribed in
-`app/bootstrap.py`, which both the API and the worker call at startup. Handlers
-run in-process after the publisher's writes; a failing handler is logged and
-counted but does not fail the publisher.
+Lower modules announce events; higher modules (or the publisher itself) react.
+Handlers are subscribed in `app/bootstrap.py`, which both the API and the worker
+call at startup. Events are stored in `shared.outbox` in the publisher's
+transaction and delivered after commit; a failing handler does not fail the
+publisher, and the API's outbox relay retries the event later.
 
 ```mermaid
 classDiagram
+    class DocumentUploaded {
+        document_id
+        storage_key
+        source_type
+        job_id
+    }
     class CompanyRegistered {
         company_id
         team_id
@@ -135,6 +143,11 @@ classDiagram
     class workspace_handlers["workspace.handlers"] {
         +create_default_topic(CompanyRegistered)
     }
+    class knowledge_handlers["knowledge.handlers"] {
+        +queue_ingestion(DocumentUploaded)
+        +queue_graph_build(DocumentIngested)
+        +delete_graph(DocumentDeleted)
+    }
     class retrieval_handlers["retrieval.handlers"] {
         +drop_answers_for_document(DocumentIngested | DocumentDeleted)
         +drop_answers_for_topic(TopicDeleted)
@@ -144,6 +157,9 @@ classDiagram
     DocumentIngested ..> retrieval_handlers : knowledge (worker) publishes
     DocumentDeleted ..> retrieval_handlers : knowledge publishes
     TopicDeleted ..> retrieval_handlers : workspace publishes
+    DocumentUploaded ..> knowledge_handlers : knowledge publishes
+    DocumentIngested ..> knowledge_handlers
+    DocumentDeleted ..> knowledge_handlers
 ```
 
 ---
@@ -194,7 +210,7 @@ classDiagram
     ingest_document --> chunker : 2. chunk
     chunker --> Chunk : produces
     ingest_document --> embedder : 3. embed
-    ingest_document ..> build_knowledge_graph : 4. send_task after completion
+    ingest_document ..> build_knowledge_graph : 4. via DocumentIngested handler
     build_knowledge_graph --> ner : entities per chunk
     build_knowledge_graph --> relations : chunks with 2+ entities
     build_knowledge_graph --> writer : Neo4j MERGE
@@ -234,6 +250,12 @@ classDiagram
 
     retriever --> graph_query
     retriever ..> Cohere : rerank-v3.5 (falls back to similarity order)
-    llm ..> Anthropic : claude-* models
-    llm ..> OpenAI : gpt-* models
+    class adapter["shared.ai.llm (adapter)"] {
+        +complete(tier, system, user) str
+        +stream(tier, system, user) AsyncGenerator
+        routes_for(tier) list~provider:model~
+    }
+    llm --> adapter : plan's answer tier
+    adapter ..> Anthropic : messages.create / messages.stream
+    adapter ..> OpenAI : chat.completions
 ```

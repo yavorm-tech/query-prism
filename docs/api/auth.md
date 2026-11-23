@@ -2,7 +2,7 @@
 
 **Base URL:** `/auth`  
 **Served by:** `api` (port 8000, via the gateway)  
-**Auth:** Bearer JWT (all endpoints except register, login, OAuth, invite preview, and password reset)
+**Auth:** Bearer access JWT (all endpoints except register, login, refresh, logout, OAuth, invite preview, and password reset)
 
 ---
 
@@ -30,9 +30,12 @@ POST /auth/register
 ```json
 {
   "access_token": "<jwt>",
-  "token_type": "bearer"
+  "token_type": "bearer",
+  "expires_in": 900
 }
 ```
+
+Also sets the refresh cookie (`Set-Cookie: qp_refresh=…; Path=/auth; HttpOnly; SameSite=Strict`, plus `Secure` on https). See [Sessions](#sessions).
 
 **Errors**
 - `409` — Email already registered
@@ -57,12 +60,49 @@ POST /auth/login
 ```json
 {
   "access_token": "<jwt>",
-  "token_type": "bearer"
+  "token_type": "bearer",
+  "expires_in": 900
 }
 ```
 
+Also sets the refresh cookie (`Set-Cookie: qp_refresh=…; Path=/auth; HttpOnly; SameSite=Strict`, plus `Secure` on https). See [Sessions](#sessions).
+
 **Errors**
 - `401` — Invalid credentials
+
+---
+
+## Sessions
+
+Access tokens are short-lived JWTs (`ACCESS_TOKEN_MINUTES`, default 15). Login,
+registration, invite acceptance and OAuth also start a **session**: an opaque
+refresh token in an httpOnly cookie scoped to `/auth` (`REFRESH_TOKEN_DAYS`,
+default 30). Each refresh token works once; using it returns a new one. If an
+already-used token is presented again more than 30 seconds later, the whole
+session is revoked (a copied token is useless once the real client has
+refreshed). Each refresh re-reads the user's teams and role, so removing a
+member takes effect within one access-token lifetime.
+
+### Refresh
+
+```
+POST /auth/refresh
+Cookie: qp_refresh=<token>
+```
+
+**Response `200`** — a new access token (same body as login) and a rotated refresh cookie.
+
+**Errors**
+- `401` — no cookie, or the session expired, was revoked or the user is inactive (the cookie is cleared)
+
+### Logout
+
+```
+POST /auth/logout
+Cookie: qp_refresh=<token>
+```
+
+**Response `204`** — revokes the session and clears the cookie. A password reset revokes every session of that user.
 
 ---
 
@@ -109,8 +149,8 @@ Redirects to Google consent screen.
 GET /auth/oauth/google/callback?code=<code>&state=<state>
 ```
 
-- **Existing user:** Returns `{access_token, token_type}` directly.
-- **New user:** Returns `{pending_token, email}` — frontend must call `/auth/oauth/complete`.
+- **Existing user:** sets the refresh cookie and redirects to `{FRONTEND_URL}/login?oauth=success`. The login page then calls `POST /auth/refresh` to get an access token. No token appears in the URL.
+- **New user:** redirects to `{FRONTEND_URL}/onboarding?token=<pending_token>` (15-minute token, only accepted by `/auth/oauth/complete`).
 
 ---
 
@@ -135,9 +175,12 @@ POST /auth/oauth/complete
 ```json
 {
   "access_token": "<jwt>",
-  "token_type": "bearer"
+  "token_type": "bearer",
+  "expires_in": 900
 }
 ```
+
+Also sets the refresh cookie (`Set-Cookie: qp_refresh=…; Path=/auth; HttpOnly; SameSite=Strict`, plus `Secure` on https). See [Sessions](#sessions).
 
 **Errors**
 - `400` — Invalid or expired pending token
@@ -332,9 +375,12 @@ POST /auth/invite/{token}/accept
 ```json
 {
   "access_token": "<jwt>",
-  "token_type": "bearer"
+  "token_type": "bearer",
+  "expires_in": 900
 }
 ```
+
+Also sets the refresh cookie (`Set-Cookie: qp_refresh=…; Path=/auth; HttpOnly; SameSite=Strict`, plus `Secure` on https). See [Sessions](#sessions).
 
 **Errors**
 - `404` — Invalid/expired token

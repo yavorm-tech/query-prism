@@ -1,17 +1,22 @@
 import logging
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app.shared.security import get_current_user, require_company_admin
 from app.shared import events
-from app.identity.tokens import create_access_token, build_token_payload
+from app.identity import sessions
+from app.identity.tokens import (
+    REFRESH_COOKIE, access_token_for, clear_refresh_cookie, issue_session, set_refresh_cookie,
+)
+from app.shared.config import get_settings
 from app.identity.service import (
     create_company, create_team, create_user, authenticate_user,
     get_user_by_email, get_teams_for_company,
     get_team, get_team_members, add_team_member, remove_team_member,
-    create_invite, get_invite_by_token, accept_invite,
+    create_invite, get_invite_by_token, accept_invite, INVITE_EXPIRY_HOURS,
     set_default_team, get_company, list_invites_for_company,
     update_user_avatar, get_user_avatar, get_user_in_company,
-    count_teams, count_users,
+    count_teams, count_users, get_user_by_id,
     create_password_reset_token, consume_reset_token,
 )
 from app.identity.api import CompanyRegistered
@@ -56,6 +61,11 @@ class CreateTeamRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    expires_in: int = 0          # seconds until access_token expires
+
+
+def _token_response(access_token: str) -> TokenResponse:
+    return TokenResponse(access_token=access_token, expires_in=get_settings().access_token_minutes * 60)
 
 
 class UserResponse(BaseModel):
@@ -123,7 +133,7 @@ async def onboard_company(company_id: str, team_id: str, owner_id: str) -> None:
 # ── Register ──────────────────────────────────────────────────────────────────
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(request: CompanyRegisterRequest):
+async def register(request: CompanyRegisterRequest, response: Response):
     if len(request.password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
 
@@ -149,17 +159,16 @@ async def register(request: CompanyRegisterRequest):
     await onboard_company(str(company["id"]), str(team["id"]), str(user["id"]))
 
     user["default_team_id"] = team["id"]
-    payload = await build_token_payload(user)
-    token = create_access_token(payload)
+    token = await issue_session(user, response)
 
     logger.info(f"New company registered: {company['name']} by {user['email']}")
-    return TokenResponse(access_token=token)
+    return _token_response(token)
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, response: Response):
     user = await authenticate_user(request.email, request.password)
     if not user:
         # Log failure if the email belongs to a real user
@@ -172,8 +181,7 @@ async def login(request: LoginRequest):
             )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
 
-    payload = await build_token_payload(user)
-    token = create_access_token(payload)
+    token = await issue_session(user, response)
 
     await log_event(
         company_id=str(user["company_id"]),
@@ -182,7 +190,41 @@ async def login(request: LoginRequest):
         actor_username=user["username"],
         actor_email=user["email"],
     )
-    return TokenResponse(access_token=token)
+    return _token_response(token)
+
+
+# ── Session refresh / logout ───────────────────────────────────────────────────
+
+def _unauthorized() -> JSONResponse:
+    r = JSONResponse(status_code=401, content={"detail": "Session expired. Please sign in again."})
+    clear_refresh_cookie(r)
+    return r
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(request: Request, response: Response):
+    """Exchange the refresh cookie for a new access token (and a new refresh cookie)."""
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if not raw:
+        return _unauthorized()
+    rotated = await sessions.rotate(raw)
+    if not rotated:
+        return _unauthorized()
+    user_id, new_raw = rotated
+    user = await get_user_by_id(user_id)
+    if not user or not user.get("is_active"):
+        await sessions.end_all_sessions(user_id)
+        return _unauthorized()
+    set_refresh_cookie(response, new_raw)
+    return _token_response(await access_token_for(user))
+
+
+@router.post("/logout", status_code=204)
+async def logout(request: Request, response: Response):
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if raw:
+        await sessions.end_session(raw)
+    clear_refresh_cookie(response)
 
 
 # ── Invite preview ────────────────────────────────────────────────────────────
@@ -202,7 +244,7 @@ async def preview_invite(token: str):
 # ── Accept invite ─────────────────────────────────────────────────────────────
 
 @router.post("/invite/{token}/accept", response_model=TokenResponse, status_code=201)
-async def accept_invite_endpoint(token: str, request: InviteAcceptRequest):
+async def accept_invite_endpoint(token: str, request: InviteAcceptRequest, response: Response):
     invite = await get_invite_by_token(token)
     if not invite:
         raise HTTPException(404, "Invite not found or expired")
@@ -229,8 +271,7 @@ async def accept_invite_endpoint(token: str, request: InviteAcceptRequest):
     await accept_invite(token)
 
     user["default_team_id"] = invite["team_id"]
-    payload = await build_token_payload(user)
-    token_str = create_access_token(payload)
+    token_str = await issue_session(user, response)
 
     await log_event(
         company_id=str(invite["company_id"]),
@@ -243,7 +284,7 @@ async def accept_invite_endpoint(token: str, request: InviteAcceptRequest):
         resource_name=invite["team_name"],
     )
     logger.info(f"Invite accepted: {invite['email']} joined team {invite['team_name']}")
-    return TokenResponse(access_token=token_str)
+    return _token_response(token_str)
 
 
 # ── Current user ──────────────────────────────────────────────────────────────
@@ -342,6 +383,7 @@ async def send_invite(
         company_name=company["name"] if company else "your company",
         team_name=team["name"],
         invite_token=invite["token"],
+        expires_hours=INVITE_EXPIRY_HOURS,
     )
 
     await log_event(
@@ -397,9 +439,11 @@ async def reset_password(request: ResetPasswordRequest):
     if len(request.new_password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
 
-    ok = await consume_reset_token(request.token, request.new_password)
-    if not ok:
+    user_id = await consume_reset_token(request.token, request.new_password)
+    if not user_id:
         raise HTTPException(400, "Reset link is invalid or has expired")
+    # A password reset ends every existing session (e.g. a stolen refresh token).
+    await sessions.end_all_sessions(user_id)
 
 
 # ── Teams ─────────────────────────────────────────────────────────────────────
