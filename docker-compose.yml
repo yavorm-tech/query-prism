@@ -120,8 +120,8 @@ services:
       MYNETWORKS: "127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
       ALLOWED_SENDER_DOMAINS: "*"
       POSTFIX_smtpd_recipient_restrictions: "permit_mynetworks, reject_non_fqdn_recipient, reject_unknown_recipient_domain, reject_unauth_destination"
-      HOSTNAME: "mail.chatbot-app.com"
-      MASQUERADE_DOMAINS: "chatbot-app.com"
+      HOSTNAME: "mail.${DOMAIN:-localhost}"
+      MASQUERADE_DOMAINS: "${DOMAIN:-localhost}"
       BOUNCE_NOTICE_RECIPIENT: "nobody"
       BOUNCE_QUEUE_LIFETIME: "0"
     mem_limit: 128m
