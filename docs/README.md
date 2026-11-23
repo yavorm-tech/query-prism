@@ -9,7 +9,8 @@
 | Document | Description |
 |----------|-------------|
 | [Architecture Overview](./architecture.md) | System design, tech stack, modules and their rules |
-| [Architecture Review](./architecture-document.html) | Oct 2026 review, roadmap (Phases 0–3) and ADRs |
+| [Services](./services.md) | Every container: purpose, ports, memory limits, volumes, how to inspect it |
+| [Decisions](./decisions.md) | Architecture decision log (ADR-001 …) |
 | [Data Models](./data-models.md) | Database schema, field definitions, relationships |
 | [Security & Permissions](./security.md) | Auth, RBAC, rate limiting, audit trail |
 | **API Reference** | |
@@ -29,52 +30,39 @@
 
 ## Quick-Start
 
+Production (one server, HTTPS): follow the deploy procedure in
+`.claude/skills/deploy/SKILL.md` (Claude Code on the server runs it as `/deploy`; a
+person can follow it too). In short:
+
 ```bash
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your API keys and secrets
-
-# Start all services (production: no datastore ports published)
-docker compose up -d
-
-# Local development: also publishes datastore ports on 127.0.0.1 and starts Flower
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-
-# Access
-# Frontend:      http://localhost:3000
-# API Gateway:   http://localhost:8000   (bound to 127.0.0.1 only)
-# Flower (queue):http://localhost:5556   (dev overlay only)
+cp .env.example .env && chmod 600 .env     # fill in secrets, DOMAIN, API keys
+procedures/deploy-check.sh preflight       # host, .env, DNS, firewall: must report 0 failed
+docker compose --profile ssl --profile monitoring up -d --build
+procedures/deploy-check.sh verify          # containers, HTTPS, exposure, backups, alerts
 ```
 
-`SECRET_KEY` is required and must be at least 32 random characters
-(`openssl rand -hex 32`); the API and worker refuse to start otherwise.
-`POSTGRES_PASSWORD` and `NEO4J_PASSWORD` have no defaults.
+Traefik gets the certificate for `DOMAIN` on first start and renews it on its own.
+Leave out `--profile monitoring` if `ALERT_EMAIL` is empty. `deploy-check.sh` never
+prints secrets.
 
-Deploying to a server: `.claude/skills/deploy/SKILL.md` is the step-by-step procedure
-(Claude Code on the server runs it as `/deploy`; a person can follow it too), and
-`procedures/deploy-check.sh preflight|verify` checks the host, `.env`, DNS, firewall,
-containers, HTTPS and backups without printing secrets.
+Local development:
 
-Production with HTTPS: set `DOMAIN` (its DNS must point at the host) and start with
-`docker compose --profile ssl up -d`. Traefik obtains the certificate on first start
-and renews it automatically; there is no separate certificate step.
+```bash
+cp .env.example .env    # API_ENV=development, FRONTEND_URL=http://localhost:5173
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+cd frontend-react && npm install && npm run dev    # http://localhost:5173
+```
+
+The dev overlay publishes the datastores on 127.0.0.1 and adds Flower
+(http://localhost:5556). The API gateway is at http://localhost:8000. Without
+`--profile ssl` there is no Traefik or built frontend; the Vite dev server replaces them.
+
+`SECRET_KEY` (32+ random characters, `openssl rand -hex 32`), `POSTGRES_PASSWORD`,
+`NEO4J_PASSWORD` and `APP_DB_PASSWORD` are required and have no defaults.
+
+Containers, ports, memory limits and volumes: see [services.md](./services.md).
 
 ---
-
-## Containers and Ports
-
-| Container | Port | Description |
-|---------|------|-------------|
-| Traefik | 80, 443 | Public entry (profile `ssl`): TLS with automatic Let's Encrypt certificates for `DOMAIN`; API paths → gateway, the rest → frontend |
-| Nginx Gateway | 127.0.0.1:8000 | API entry point behind Traefik, routes everything to `api`; loopback-only on the host |
-| api | 8000 (internal) | All HTTP endpoints; `/metrics` internal only |
-| worker | 9101 (internal) | Celery ingestion worker; Prometheus metrics |
-| migrate | — | Runs `alembic upgrade head` once per deploy |
-| PostgreSQL | 5434 (dev overlay) | Primary relational store, one schema per context |
-| Neo4j | 7474 / 7687 (dev overlay) | Knowledge graph |
-| Redis (cache) | 6380 (dev overlay) | Answer cache & rate-limit counters, LRU eviction |
-| Redis (broker) | 6381 (dev overlay) | Celery broker & results, noeviction + AOF |
-| Flower | 5556 (dev overlay) | Celery task monitor |
 
 ## Backend development
 

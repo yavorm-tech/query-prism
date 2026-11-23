@@ -27,6 +27,12 @@ graph TB
             Broker["redis-broker\nCelery queue\n(noeviction, AOF)"]
             Postfix["Postfix SMTP"]
         end
+
+        subgraph Mon["monitoring profile"]
+            Prom["Prometheus\n127.0.0.1:9090"]
+            AM["Alertmanager\n127.0.0.1:9093"]
+            NodeExp["node-exporter\nbackup metrics"]
+        end
     end
 
     Browser -->|HTTPS :443| Traefik
@@ -50,31 +56,16 @@ graph TB
     Worker -->|Bolt| Neo4j
     Worker -->|cache invalidation| Redis
     Worker -->|HTTPS| OpenAI_API
+
+    Prom -->|scrape /metrics| API
+    Prom -->|scrape :9101| Worker
+    Prom -->|scrape| NodeExp
+    Prom -->|alerts| AM
+    AM -->|email| Postfix
+    Postfix -->|SMTP relay| Relay["Email provider"]
 ```
 
----
-
-## Port Reference
-
-| Container | Internal Port | Host Port | Accessible From |
-|-----------|--------------|-----------|----------------|
-| gateway (nginx) | 8000 | 127.0.0.1:8000 | Traefik + this host only |
-| api | 8000 | — | Internal + Gateway |
-| worker | 9101 (metrics) | — | Internal |
-| traefik | 80/443 | 80/443 | Public (80 only redirects to HTTPS and answers ACME challenges) |
-
----
-
-## Volume Mounts
-
-| Volume | Mount Path | Purpose |
-|--------|-----------|---------|
-| `postgres_data` | `/var/lib/postgresql/data` | PostgreSQL persistent data |
-| `neo4j_data` | `/data` | Neo4j persistent data |
-| `redis_data` | `/data` | Answer cache snapshot (RDB) |
-| `redis_broker_data` | `/data` | Celery broker persistence (AOF) |
-| `uploads` | `/app/uploads` | Uploaded files awaiting ingestion when `STORAGE_BACKEND=local` (shared between api and worker; deleted after ingestion). With `STORAGE_BACKEND=s3` files go to the bucket instead and api/worker can run on separate hosts |
-| `traefik_letsencrypt` | `/letsencrypt` | `acme.json`: Let's Encrypt account and certificates (Traefik renews them ~30 days before expiry) |
+Ports, memory limits and volumes for each container: [services.md](../services.md).
 
 ---
 
@@ -94,23 +85,8 @@ worker → same datastores; consumes redis-broker queue "ingestion"
 
 ---
 
-## Production Deployment Checklist
+## Deploying
 
-- [ ] Set `SECRET_KEY` to a cryptographically random 32+ byte value (enforced at startup)
-- [ ] Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`
-- [ ] Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL`
-- [ ] Configure `SMTP_*` environment variables for email delivery
-- [ ] Set `DOMAIN` (and optionally `ACME_EMAIL`), point its DNS A record at the host, start with `--profile ssl`: Traefik gets the certificate on first start
-- [ ] Set `DATABASE_URL` with production credentials
-- [ ] Set `NEO4J_PASSWORD` to a strong password
-- [ ] Set `APP_DB_PASSWORD`: `api` and `worker` connect as the least-privilege `qp_app` role (row-level security applies), `migrate` as the owner
-- [ ] Mount persistent volumes for PostgreSQL, Neo4j, Redis, and uploads
-- [x] Enable Redis AOF persistence for durability (`redis-broker`)
-- [ ] Set `BACKUP_S3_URI` (+ `AWS_*`) in `.env`, run `procedures/install-backup-cron.sh` on the host, then `procedures/backup.sh` once to check
-- [ ] Set `ALERT_EMAIL` and start the `monitoring` profile (Prometheus, Alertmanager, backup age via node-exporter)
-- [ ] Set `FRONTEND_URL` / `APP_URL` to the public https origin (CORS allow-list and the refresh cookie's `Secure` flag follow it)
-- [ ] Optional: `STORAGE_BACKEND=s3` + `S3_*` to keep uploads off the host volume
-- [ ] Rehearse each release on staging first: `procedures/staging.sh refresh` (migrations against a scrubbed copy of production)
-- [ ] Set up log rotation for all service containers
-- [x] Flower runs only in the dev overlay, bound to 127.0.0.1
-- [x] Scrape `api:8000/metrics` and `worker:9101/metrics` with Prometheus (`monitoring` profile)
+The step-by-step procedure (first install, update, rollback, health check) is
+`.claude/skills/deploy/SKILL.md`; `procedures/deploy-check.sh preflight|verify`
+checks the host, `.env`, DNS, firewall, containers, HTTPS and backups.

@@ -56,7 +56,7 @@
 | Component | Technology |
 |-----------|-----------|
 | Containers | Docker + Docker Compose |
-| Gateway | Nginx (reverse proxy, SSL termination) |
+| Gateway | Nginx (internal API reverse proxy) |
 | TLS | Traefik (Let's Encrypt, automatic issue and renewal) |
 | Mail | Postfix SMTP relay |
 
@@ -66,8 +66,8 @@
 
 Query-Prism runs as **one API process** organised into **bounded contexts**, plus a
 separately deployed **Celery worker** built from the same code (`backend/`).
-Until v2 it was five HTTP microservices sharing one database; see
-`docs/architecture-document.html` for the review that led to the change.
+Until v2 it was five HTTP microservices sharing one database; see ADR-001 and
+ADR-002 in [decisions.md](./decisions.md) for why it changed.
 
 ```
         Browser ──► Traefik (TLS) ──► Nginx gateway :8000 ──► api :8000

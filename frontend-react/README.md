@@ -1,54 +1,51 @@
 # frontend-react
 
-A Vite + React + TypeScript single-page app (Flowbite + Tailwind UI, TanStack
-Query/Table/Form) that talks to the same backend gateway as the legacy Next.js
-`frontend`. It is a drop-in replacement built during the React migration.
+The Query Prism web app: Vite + React 19 + TypeScript, Flowbite + Tailwind UI,
+TanStack Query/Table/Form, React Router, Axios.
 
-## Prerequisites
+In production it is the `frontend` service in `docker-compose.yml` (profile `ssl`):
+the Dockerfile builds the static bundle and nginx serves it
+(`gateway/frontend-react.conf`), behind Traefik. See
+[docs/services.md](../docs/services.md).
 
-- Node.js 18+ and npm
-- The backend gateway running and reachable (default `http://localhost:8000`)
+## Local development
 
-## Setup
+Prerequisites: Node.js 22+ and the backend running locally
+(`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d` from the
+repository root), which puts the API gateway on `http://localhost:8000`.
 
 ```bash
 npm install
-cp .env.example .env   # then edit if your gateway is not on localhost:8000
+cp .env.example .env   # VITE_API_URL=http://localhost:8000
+npm run dev            # http://localhost:5173
 ```
 
-### Environment
+With `API_ENV=development` in the backend's `.env`, the API accepts requests from
+the local Vite ports (CORS).
 
-| Variable       | Default                 | Description                          |
-|----------------|-------------------------|--------------------------------------|
-| `VITE_API_URL` | `http://localhost:8000` | Base URL of the backend nginx gateway |
-
-`.env` is git-ignored; `.env.example` documents the contract.
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_API_URL` | empty (same origin) | Base URL of the API. Set it for local dev; leave it empty for production builds, where Traefik serves the app and the API on one origin. Baked in at build time. |
 
 ## Scripts
 
-| Command          | What it does                                              |
-|------------------|----------------------------------------------------------|
-| `npm run dev`    | Start the Vite dev server (hot reload)                    |
-| `npm run build`  | Type-check (`tsc -b`) and produce a production build in `dist/` |
-| `npm run preview`| Serve the built `dist/` locally                          |
-| `npm test`       | Run the Vitest suite once                                |
-| `npm run test:watch` | Run Vitest in watch mode                             |
-| `npm run lint`   | Run ESLint                                                |
+| Command | What it does |
+|---|---|
+| `npm run dev` | Vite dev server with hot reload |
+| `npm run build` | Type-check (`tsc -b`) and build into `dist/` |
+| `npm run preview` | Serve the built `dist/` locally |
+| `npm test` | Run the Vitest suite once |
+| `npm run test:watch` | Vitest in watch mode |
+| `npm run lint` | ESLint |
 
-## Auth & storage contract
+## Authentication
 
-This app reads and writes the JWT bearer token in `localStorage` under the key
-`token` — the **exact same contract** as the legacy `frontend`. A user logged
-in via either app is recognized by the other. A single axios instance attaches
-the token to every REST call and redirects to `/login` on a 401; the `/chat/stream`
-SSE endpoint is handled by a separate fetch-based helper.
+- The access token (short-lived JWT) is kept in `localStorage` under `token`; one
+  Axios instance (`src/lib/api/client.ts`) attaches it to every request.
+- The refresh token is an httpOnly cookie scoped to `/auth`, so requests are sent
+  `withCredentials`. On a 401 the client calls `POST /auth/refresh` once (shared
+  between concurrent requests), retries, and goes to `/login` if that fails.
+- `/chat/stream` (Server-Sent Events) uses a separate fetch-based helper
+  (`src/lib/api/stream.ts`) with the same refresh logic.
 
-See `../api-endpoints.md` for the full list of gateway-exposed endpoints this
-app consumes.
-
-## Relationship to docker-compose
-
-`docker-compose.yml` is intentionally **not** yet pointed at this app — the
-legacy `frontend` remains the wired-up service. This project runs standalone via
-`npm run dev` / a static `dist/` build against the same gateway until the
-migration is cut over.
+The endpoints the app uses are documented in [docs/api/](../docs/api/).
