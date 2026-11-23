@@ -15,7 +15,9 @@ config = context.config
 
 
 def _url() -> str:
-    url = os.environ["DATABASE_URL"]
+    # Migrations run as the schema owner; the app itself connects as the
+    # least-privilege role (0011), so the two URLs differ when both are set.
+    url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ["DATABASE_URL"]
     return url if url.startswith("postgresql+asyncpg://") else url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 

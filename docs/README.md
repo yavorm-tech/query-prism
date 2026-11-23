@@ -123,6 +123,28 @@ undelivered events dropped). Customer documents and questions stay, so keep
 staging access as tight as production's. To test a release before deploying it,
 run staging from a separate checkout of that release.
 
+## Answer-quality eval
+
+`backend/evals/` holds a fixed corpus (five documents about a fictional company)
+and 28 questions: single-document lookups, questions that need two documents,
+and questions the corpus can't answer. The runner signs up a throwaway company
+on a running stack, uploads the corpus, asks every question through `POST /chat`
+and grades the answers without an LLM judge: expected source files retrieved
+(doc recall, MRR), required facts present, and a clear "the documents don't
+say" for unanswerable questions.
+
+```bash
+cd backend
+python -m evals.run --base-url http://127.0.0.1:18000 --out evals/results/$(date +%F).json
+python -m evals.run ... --min-answer-pass 0.85 --min-refusal 1   # exit 1 below these
+```
+
+Run it against staging. It costs real API calls (embeddings, graph extraction,
+re-ranking, ~28 answers). A new company is on the starter plan, so answers use
+the `basic` tier; to compare models, change `LLM_TIER_BASIC` in staging and
+run again. Add real (anonymised) questions over time; five documents make
+retrieval easy, so the answer and refusal scores matter most at first.
+
 ## Monitoring and alerts
 
 ```bash

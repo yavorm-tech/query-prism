@@ -3,6 +3,7 @@ from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.shared.config import get_settings
+from app.shared.db import set_tenant
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_TYPE = "access"
@@ -31,6 +32,8 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Database row-level security scopes this request's queries to the caller's company.
+    set_tenant(claims.get("company_id"))
     return claims
 
 

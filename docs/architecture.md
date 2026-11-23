@@ -136,12 +136,16 @@ tables: identity implements metering's `TenantDirectory` port (also wired in
 | `retrieval` | query_history | retrieval |
 | `metering` | plan_limits, subscriptions | metering |
 | `audit` | audit_log | audit |
-| `shared` | outbox | shared kernel (`app/shared/events.py`) |
+| `shared` | outbox; functions `current_company()`, `apply_app_grants()` | shared kernel (`app/shared/events.py`, `app/shared/db.py`) |
 
 Migrations are Alembic revisions in `backend/migrations/versions/`, applied by the
 `migrate` compose service before `api` and `worker` start. Alembic alone builds a
 fresh database: revision 0001 creates the baseline schema from
 `backend/migrations/sql/0001_baseline.sql` when the database is empty.
+
+The `migrate` service connects as the owner (`POSTGRES_USER`); `api` and `worker`
+connect as `APP_DB_USER` (`qp_app`), which revision 0011 creates with only row
+privileges, so row-level security (0012) applies to them.
 
 ### Upload storage
 
@@ -233,7 +237,7 @@ Cache result in Redis
 
 ## Multi-Tenancy Model
 
-Every resource is scoped to a `company_id`. Isolation is enforced in the application layer (no Postgres RLS yet) and covered by integration tests.
+Every resource is scoped to a `company_id`. Isolation is enforced in the application layer and again by Postgres row-level security for authenticated requests (see `docs/security.md`), both covered by integration tests.
 
 ```
 Company (tenant)

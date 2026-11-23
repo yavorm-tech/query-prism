@@ -18,6 +18,7 @@ import uuid
 import structlog
 from structlog.tracebacks import ExceptionDictTransformer
 from prometheus_client import Counter, Gauge, Histogram
+from app.shared.db import request_scope
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
@@ -126,7 +127,9 @@ class RequestContextMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            # get_current_user scopes the database to the caller's company for this request only.
+            async with request_scope():
+                await self.app(scope, receive, send_wrapper)
         finally:
             elapsed = time.perf_counter() - start
             route = getattr(scope.get("route"), "path", None) or "unmatched"

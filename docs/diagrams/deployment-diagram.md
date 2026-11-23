@@ -104,6 +104,7 @@ worker → same datastores; consumes redis-broker queue "ingestion"
 - [ ] Configure Certbot with your domain for HTTPS
 - [ ] Set `DATABASE_URL` with production credentials
 - [ ] Set `NEO4J_PASSWORD` to a strong password
+- [ ] Set `APP_DB_PASSWORD`: `api` and `worker` connect as the least-privilege `qp_app` role (row-level security applies), `migrate` as the owner
 - [ ] Mount persistent volumes for PostgreSQL, Neo4j, Redis, and uploads
 - [x] Enable Redis AOF persistence for durability (`redis-broker`)
 - [ ] Set `BACKUP_S3_URI` (+ `AWS_*`) in `.env`, run `procedures/install-backup-cron.sh` on the host, then `procedures/backup.sh` once to check

@@ -23,7 +23,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.shared import events
 from app.shared.config import get_settings
-from app.shared.db import get_pool, close_pool
+from app.shared.db import close_pool, get_pool, warn_if_rls_bypassed
 from app.shared.neo4j import close_driver
 from app.shared.observability import DOCUMENTS_BY_STATUS, RequestContextMiddleware, configure_logging
 from app.shared.rate_limit import limiter
@@ -68,6 +68,10 @@ async def lifespan(app: FastAPI):
     logger.info("Query Prism API starting...")
     await get_pool()
     logger.info("Postgres ready")
+    try:
+        await warn_if_rls_bypassed()
+    except Exception as e:
+        logger.warning(f"Could not check the database role: {e}")
     try:
         await init_schema()
         logger.info("Neo4j ready")

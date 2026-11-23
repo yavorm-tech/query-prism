@@ -160,7 +160,9 @@ services:
     restart: unless-stopped
     env_file: .env
     environment: &backend_env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
+      # The least-privilege role created by migration 0011 (row-level security applies to it);
+      # only the migrate service connects as the owner.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-qp_app}:${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis-broker:6379/0
       NEO4J_URL: bolt://neo4j:7687

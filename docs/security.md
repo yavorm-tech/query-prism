@@ -71,9 +71,26 @@
 
 ## Data Isolation (Multi-Tenancy)
 
-- Every table carries `company_id`
-- All queries filter by `company_id` from the JWT token
-- No cross-tenant data leakage is possible at the application layer
+Two layers:
+
+1. **Application**: every query filters by `company_id` from the JWT, and every
+   team/topic/document id is checked against the caller's company.
+2. **Database row-level security** (migration 0012): `get_current_user` puts the
+   caller's company on every connection the request uses (`app.company_id`), and
+   policies on `companies`, `users`, `teams`, `invites`, `topics`, `documents`,
+   `query_history`, `subscriptions` and `audit_log` hide other companies' rows
+   and reject writes into them. A query that forgets its filter returns nothing
+   foreign. `chunks` and `team_members` are reached only through `documents` and
+   `teams`. Paths with no signed-in user (sign-up, login, token links, the
+   worker, the outbox relay) run unscoped and keep their own filters.
+
+RLS needs the app to connect as a role that doesn't bypass it. The API and
+worker connect as `APP_DB_USER` (default `qp_app`, created by migration 0011):
+rows only, no DDL or `TRUNCATE`, `audit_log` append-only. Migrations and backups
+use the owner (`POSTGRES_USER`). The API logs a warning at startup when it is
+connected as a role that bypasses RLS.
+
+Within a company:
 - Team members can only see:
   - Their own teams' documents
   - Documents with `visibility = company` (scoped to their company)
@@ -109,7 +126,7 @@ Quotas are enforced in-process by the metering module (`app.metering.api`) befor
 
 ## Audit Logging
 
-All significant events are recorded in the `audit_log` table.
+All significant events are recorded in the `audit_log` table. The application role can only insert into it (no updates or deletes).
 
 ### Logged Event Types
 

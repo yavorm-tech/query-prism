@@ -16,8 +16,12 @@ def _alembic(*args):
                    capture_output=True)
 
 
+def _owner_dsn() -> str:
+    return os.environ["MIGRATION_DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+
+
 async def _schemas_of(tables):
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+    conn = await asyncpg.connect(_owner_dsn())
     try:
         rows = await conn.fetch("SELECT table_name, table_schema FROM information_schema.tables WHERE table_name = ANY($1)", tables)
     finally:
@@ -39,7 +43,7 @@ async def test_downgrade_and_upgrade_round_trip():
 
 
 async def _company_columns() -> set[str]:
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+    conn = await asyncpg.connect(_owner_dsn())
     try:
         rows = await conn.fetch(
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'companies'"
@@ -61,7 +65,7 @@ async def test_reset_links_sent_before_hashing_keep_working(client, register):
     """0009 hashes outstanding reset tokens in place; the raw token in the email still works."""
     co = await register()
     _alembic("downgrade", "0008")
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+    conn = await asyncpg.connect(_owner_dsn())
     try:
         await conn.execute(
             "INSERT INTO identity.password_reset_tokens (user_id, token, expires_at) "

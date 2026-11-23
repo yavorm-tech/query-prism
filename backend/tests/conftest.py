@@ -59,11 +59,22 @@ def pytest_configure(config):
     if not _integration_available():
         return
     # Must happen before any app module calls get_settings().
-    os.environ["DATABASE_URL"] = _create_test_database()
+    # Migrations run as the owner; the app connects as the least-privilege role
+    # they create (0011), so row-level security applies in tests as in production.
+    owner_url = _create_test_database()
+    os.environ["MIGRATION_DATABASE_URL"] = owner_url
+    os.environ["DATABASE_URL"] = owner_url
+    os.environ.setdefault("APP_DB_USER", "qp_app")
+    os.environ.setdefault("APP_DB_PASSWORD", "ci-app-password")
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=BACKEND, check=True, env=os.environ.copy(),
     )
+    from urllib.parse import urlsplit, urlunsplit
+    parts = urlsplit(owner_url)
+    host = parts.netloc.rsplit("@", 1)[1]
+    os.environ["DATABASE_URL"] = urlunsplit(parts._replace(
+        netloc=f"{os.environ['APP_DB_USER']}:{os.environ['APP_DB_PASSWORD']}@{host}"))
     import redis
     redis.Redis.from_url(os.environ["REDIS_URL"]).flushdb()
 

@@ -78,11 +78,24 @@ case "${cmd}" in
     wait_for_postgres
     db="$(setting POSTGRES_DB)"
     psql_stg postgres -c "DROP DATABASE IF EXISTS \"${db}\" WITH (FORCE)" -c "CREATE DATABASE \"${db}\""
+    # Grants are not restored (--no-privileges: role names differ between
+    # environments); staging's app role is (re)created and granted below.
+    app_role="$(setting APP_DB_USER qp_app)"
+    app_password="$(setting APP_DB_PASSWORD)"
+    [[ -n "${app_password}" ]] || die "set APP_DB_PASSWORD in .env.staging"
     docker exec -i "${PG}" pg_restore --no-owner --no-privileges --exit-on-error \
       -U "$(setting POSTGRES_USER)" -d "${db}" < "${dump}"
 
     log "Applying migrations to the restored data"
     compose run --rm --build migrate
+
+    log "Granting ${app_role} access to the restored database"
+    psql_stg "${db}" -v role="${app_role}" -v pw="${app_password}" <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'role', :'pw')
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
+SELECT format('ALTER ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS', :'role', :'pw') \gexec
+SELECT shared.apply_app_grants(:'role');
+SQL
 
     log "Scrubbing personal data and credentials"
     psql_stg "${db}" -v staging_password="${password}" < "${ROOT}/procedures/staging-scrub.sql"
